@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 
+import pytest
 import yaml
 
 from mtrl.config import load_config
@@ -47,6 +48,7 @@ def _args(config: str, out, seed: int = 0) -> argparse.Namespace:
         wandb=False,
         wandb_project="unused",
         no_eval=False,
+        resume=False,
     )
 
 
@@ -103,3 +105,59 @@ def test_shipped_configs_all_load():
     for path in configs:
         cfg = load_config(path)
         assert cfg.algo.name in ("sac",), f"{path.name} selects an unregistered algo"
+
+
+def test_checkpoint_and_resume(tmp_path):
+    """A 40-hour run must survive an interruption, replay buffer included."""
+    cfg = {
+        "name": "ckpt",
+        "env": {"vector_strategy": "sync", "max_episode_steps": 10, "tasks": ["reach-v3"]},
+        "algo": {
+            "learning_starts": 8,
+            "batch_size": 8,
+            "buffer_size": 500,
+            "net_arch": [16, 16],
+            "gradient_steps": 1,
+        },
+        "eval": {"freq": 1000, "n_episodes": 1, "final_n_episodes": 2},
+        "train": {"total_steps": 40, "log_interval": 1, "checkpoint_freq": 20},
+    }
+    path = tmp_path / "ckpt.yaml"
+    path.write_text(yaml.safe_dump(cfg))
+    out = tmp_path / "results"
+
+    run(_args(str(path), out))
+    ckpt = out / "sac_ckpt_base_s0" / "checkpoint"
+    assert (ckpt / "model.zip").exists()
+    assert (ckpt / "replay_buffer.pkl").exists(), "resume without the buffer is not a resume"
+
+    # Extend the budget and resume: it must continue, not restart.
+    cfg["train"]["total_steps"] = 80
+    path.write_text(yaml.safe_dump(cfg))
+    args = _args(str(path), out)
+    args.resume = True
+    run(args)
+
+    final = json.loads((out / "sac_ckpt_base_s0" / "final_eval.json").read_text())
+    assert final["n_episodes_per_task"] == 2
+
+
+def test_resume_refuses_without_replay_buffer(tmp_path):
+    cfg = {
+        "name": "nobuf",
+        "env": {"vector_strategy": "sync", "max_episode_steps": 10, "tasks": ["reach-v3"]},
+        "algo": {"learning_starts": 8, "batch_size": 8, "buffer_size": 200, "net_arch": [16, 16],
+                 "gradient_steps": 1},
+        "eval": {"freq": 1000, "n_episodes": 1, "final_n_episodes": 1},
+        "train": {"total_steps": 40, "log_interval": 1, "checkpoint_freq": 20},
+    }
+    path = tmp_path / "nobuf.yaml"
+    path.write_text(yaml.safe_dump(cfg))
+    out = tmp_path / "results"
+    run(_args(str(path), out))
+
+    (out / "sac_nobuf_base_s0" / "checkpoint" / "replay_buffer.pkl").unlink()
+    args = _args(str(path), out)
+    args.resume = True
+    with pytest.raises(FileNotFoundError, match="empty replay buffer"):
+        run(args)

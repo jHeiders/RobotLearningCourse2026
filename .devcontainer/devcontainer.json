@@ -24,14 +24,17 @@
     "hostRequirements": {
         "gpu": "optional"
     },
-    "mounts": [
-        // Persist the uv cache so rebuilds do not re-download torch.
-        "source=mtrl-uv-cache,target=/home/dev/.cache/uv,type=volume"
-    ],
+    // Remap the container user to the host's uid/gid so files created on the bind
+    // mount are owned correctly. Default true on Linux; stated explicitly because this
+    // project is developed on a domain-joined machine where the host uid is nowhere
+    // near 1000. No-op on Windows, where bind mounts carry no Unix ownership.
+    "updateRemoteUserUID": true,
     "remoteEnv": {
-        // Set WANDB_API_KEY on the host and it is passed through; runs stay local
-        // without it.
-        "WANDB_API_KEY": "${localEnv:WANDB_API_KEY}"
+        // Set these on the host and they pass through. Without them runs stay local;
+        // without WANDB_ENTITY they land in your personal account rather than the
+        // shared team, where your partner cannot see them.
+        "WANDB_API_KEY": "${localEnv:WANDB_API_KEY}",
+        "WANDB_ENTITY": "${localEnv:WANDB_ENTITY}"
     },
     "postCreateCommand": "uv sync --all-extras",
     "customizations": {

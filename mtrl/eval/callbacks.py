@@ -45,7 +45,8 @@ class MultiTaskEvalCallback(BaseCallback):
             self.evaluate()
         return True
 
-    def evaluate(self) -> dict[str, float]:
+    def evaluate(self, n_episodes: int | None = None) -> dict[str, float]:
+        n_episodes = self.n_episodes if n_episodes is None else n_episodes
         env = self.eval_env
         n = env.num_envs
         labels = env.get_attr("task_labels")[0]
@@ -56,7 +57,7 @@ class MultiTaskEvalCallback(BaseCallback):
         running_return = np.zeros(n, dtype=np.float64)
 
         obs = env.reset()
-        while min(len(s) for s in successes) < self.n_episodes:
+        while min(len(s) for s in successes) < n_episodes:
             actions, _ = self.model.predict(obs, deterministic=self.deterministic)
             obs, rewards, dones, infos = env.step(actions)
             running_return += rewards
@@ -72,8 +73,8 @@ class MultiTaskEvalCallback(BaseCallback):
         by_task_success: dict[str, list[float]] = defaultdict(list)
         by_task_return: dict[str, list[float]] = defaultdict(list)
         for i, label in enumerate(labels):
-            by_task_success[label].extend(successes[i][: self.n_episodes])
-            by_task_return[label].extend(returns[i][: self.n_episodes])
+            by_task_success[label].extend(successes[i][:n_episodes])
+            by_task_return[label].extend(returns[i][:n_episodes])
 
         results: dict[str, float] = {}
         for task in sorted(by_task_success):
@@ -91,6 +92,11 @@ class MultiTaskEvalCallback(BaseCallback):
         for key, value in results.items():
             self.logger.record(key, value)
         self.logger.record("eval/steps_per_task", self.num_timesteps / max(len(labels), 1))
+        # Flush immediately rather than waiting for SB3's own episode-count cadence.
+        # Without this, eval metrics are written at whatever step the next rollout dump
+        # happens to land on, and the final evaluation after learn() returns is never
+        # written at all — it would reach final_eval.json but never TensorBoard or W&B.
+        self.logger.dump(self.num_timesteps)
 
         if self.verbose:
             summary = "  ".join(

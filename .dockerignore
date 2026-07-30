@@ -1,0 +1,14 @@
+# The build context only needs to be small — the image installs from pyproject/uv.lock,
+# it does not COPY the source tree (that arrives via the bind mount).
+.venv/
+.git/
+results/
+figures/
+wandb/
+runs/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+project_description/

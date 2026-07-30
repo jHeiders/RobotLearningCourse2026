@@ -19,8 +19,16 @@ export MUJOCO_GL="${MUJOCO_GL:-egl}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 mkdir -p "$REPO_ROOT/results"
 
+# Weights & Biases is opt-in, so runs work before the account exists:
+#   WANDB=1                       -> log to W&B
+#   WANDB=1 WANDB_MODE=offline    -> record locally now, `wandb sync` later
+WANDB_FLAG=""
+if [ "${WANDB:-0}" = "1" ]; then
+    WANDB_FLAG="--wandb"
+fi
+
 for SEED in "$@"; do
     LOG="$REPO_ROOT/results/$(basename "$CONFIG" .yaml)_s${SEED}.log"
     echo "=== $CONFIG seed=$SEED -> $LOG"
-    uv run python -m mtrl.train --config "$CONFIG" --seed "$SEED" ${WANDB_FLAG---wandb} 2>&1 | tee "$LOG"
+    uv run python -m mtrl.train --config "$CONFIG" --seed "$SEED" $WANDB_FLAG 2>&1 | tee "$LOG"
 done

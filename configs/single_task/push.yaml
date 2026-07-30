@@ -6,5 +6,12 @@ env:
   tasks: [push-v3]
   envs_per_task: 4
 
+algo:
+  # 128 samples per task, matching MT3 (384/3) and MT10 (1280/10). The single-vs-multi
+  # comparison is a graded deliverable, and leaving single-task on the default 512 would
+  # give it 4x the per-task batch — multi-task would then look worse for a reason that
+  # has nothing to do with inter-task interference.
+  batch_size: 128
+
 train:
   total_steps: 2000000

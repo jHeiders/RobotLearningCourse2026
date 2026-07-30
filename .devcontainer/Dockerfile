@@ -25,12 +25,14 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
 USER ${USERNAME}
 WORKDIR /workspace
 
-# The virtualenv deliberately lives outside /workspace: that directory is bind-mounted
-# from the host, so a .venv inside it would be shadowed by (or leak into) the host's.
-ENV UV_PROJECT_ENVIRONMENT=/home/${USERNAME}/.venv \
+# The virtualenv lives inside the bind-mounted workspace so it inherits the host user's
+# ownership automatically and survives image rebuilds. Anything created inside the image
+# instead (a home directory, a named cache volume) is owned by uid 1000, which breaks as
+# soon as the host uid differs — and on a domain-joined machine it always does.
+ENV UV_PROJECT_ENVIRONMENT=/workspace/.venv \
     UV_LINK_MODE=copy \
     UV_COMPILE_BYTECODE=1 \
-    PATH=/home/${USERNAME}/.venv/bin:${PATH} \
+    PATH=/workspace/.venv/bin:${PATH} \
     MUJOCO_GL=egl \
     NVIDIA_VISIBLE_DEVICES=all \
     NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics
