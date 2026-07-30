@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# run outputs — configs are the registry, results are not committed
+results/*
+!results/.gitkeep
+figures/*
+!figures/.gitkeep
+runs/
+wandb/
+*.zip
+*.pt
+*.mp4

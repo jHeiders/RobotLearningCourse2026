@@ -1,0 +1,11 @@
+# R4: success > 30 %. Hardest of the three single tasks — budget the most tuning time
+# here, not on reach.
+extends: ../base.yaml
+name: mt1-pick-place
+
+env:
+  tasks: [pick-place-v3]
+  envs_per_task: 4
+
+train:
+  total_steps: 2000000

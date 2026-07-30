@@ -1,0 +1,38 @@
+# Defaults shared by every experiment. Task-set configs inherit via `extends:`.
+name: base
+variant: base
+
+env:
+  benchmark: custom          # custom | MT10 | MT50
+  tasks: [reach-v3]
+  use_one_hot: null          # null -> automatic (on iff more than one task)
+  envs_per_task: 1           # >1 only for single-task runs (one-hot must be off)
+  max_episode_steps: 500
+  reward_function_version: v2
+  terminate_on_success: false
+  task_select: random
+  vector_strategy: async     # async | sync
+  reward_normalization_method: null   # null | gymnasium | exponential
+  normalize_observations: false
+
+algo:
+  name: sac
+  learning_rate: 3.0e-4
+  buffer_size: 1000000
+  learning_starts: 4000
+  batch_size: 512
+  tau: 0.005
+  gamma: 0.99
+  train_freq: 1
+  gradient_steps: -1         # -1 -> one gradient step per env step collected (UTD = 1)
+  ent_coef: auto
+  net_arch: [400, 400, 400]
+
+eval:
+  freq: 100000               # total env steps summed across tasks
+  n_episodes: 5              # per task
+  deterministic: true
+
+train:
+  total_steps: 1000000
+  log_interval: 10

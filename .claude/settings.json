@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Bash(uv run pytest *)",
+      "Bash(uv run ruff check *)",
+      "Bash(uv run ruff format --check *)",
+      "Bash(uv pip list*)",
+      "Bash(uv tree*)",
+      "Bash(uv lock --check*)",
+      "Bash(nvidia-smi*)",
+      "Bash(pdftotext *)",
+      "Bash(pdfinfo *)",
+      "Bash(jupyter nbconvert --to script --stdout *)"
+    ]
+  }
+}

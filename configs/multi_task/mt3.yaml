@@ -1,0 +1,20 @@
+# R5: average success > 40 % across reach, push and pick-place.
+#
+# These three tasks are exactly the first three of MT10, so the one-hot block here is a
+# prefix of the MT10 one — which is what makes the MT3 -> MT10 scaling comparison clean.
+#
+# batch_size follows the MT-SAC convention of ~128 samples per task from one shared
+# replay buffer.
+extends: ../base.yaml
+name: mt3
+
+env:
+  benchmark: custom
+  tasks: [reach-v3, push-v3, pick-place-v3]
+  envs_per_task: 1
+
+algo:
+  batch_size: 384
+
+train:
+  total_steps: 3000000

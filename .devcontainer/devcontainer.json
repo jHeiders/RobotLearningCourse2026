@@ -1,0 +1,50 @@
+{
+    // Development container for the Meta-World multi-task RL project.
+    //
+    // Its job is environment parity across the group: one member may be on Windows,
+    // where native Python would use `spawn` rather than `fork` for multiprocessing and
+    // change how the vectorised environments behave. Inside this container everyone
+    // gets Linux semantics and the same GL libraries.
+    //
+    // It doubles as the reproducibility artifact for the submitted code.
+    "name": "Robot Learning - Meta-World MTRL",
+    "build": {
+        "dockerfile": "Dockerfile",
+        "args": {
+            "USERNAME": "dev",
+            "USER_UID": "1000",
+            "USER_GID": "1000"
+        }
+    },
+    "remoteUser": "dev",
+    "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=cached",
+    "workspaceFolder": "/workspace",
+    // "optional" so the container still starts on a machine without an NVIDIA GPU.
+    // CPU-only training works: the bottleneck is MuJoCo stepping, not the network.
+    "hostRequirements": {
+        "gpu": "optional"
+    },
+    "mounts": [
+        // Persist the uv cache so rebuilds do not re-download torch.
+        "source=mtrl-uv-cache,target=/home/dev/.cache/uv,type=volume"
+    ],
+    "remoteEnv": {
+        // Set WANDB_API_KEY on the host and it is passed through; runs stay local
+        // without it.
+        "WANDB_API_KEY": "${localEnv:WANDB_API_KEY}"
+    },
+    "postCreateCommand": "uv sync --all-extras",
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "ms-python.python",
+                "charliermarsh.ruff",
+                "ms-toolsai.tensorboard"
+            ],
+            "settings": {
+                "python.defaultInterpreterPath": "/home/dev/.venv/bin/python",
+                "python.testing.pytestEnabled": true
+            }
+        }
+    }
+}

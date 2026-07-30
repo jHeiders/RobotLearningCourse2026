@@ -1,0 +1,22 @@
+# R6: average success > 30 % across the full MT10 task set.
+#
+# The long pole of the project: roughly 1-2 days of wall-clock per seed. Launch it as
+# early as the schedule allows — there is no room to discover a failure here late.
+#
+# total_steps of 10M is 1M per task. The MT-SAC reference setting is 2M per task; raise
+# this if the measured throughput turns out to allow it.
+extends: ../base.yaml
+name: mt10
+
+env:
+  benchmark: MT10
+  envs_per_task: 1
+
+algo:
+  batch_size: 1280
+
+eval:
+  freq: 200000
+
+train:
+  total_steps: 10000000

@@ -1,0 +1,12 @@
+# R2: success > 90 %. The easiest task — treat it as the smoke test for the whole
+# stack. If reach does not clear 90 %, something is wrong with the plumbing, not the
+# hyperparameters.
+extends: ../base.yaml
+name: mt1-reach
+
+env:
+  tasks: [reach-v3]
+  envs_per_task: 4           # no one-hot in single-task runs, so this is free throughput
+
+train:
+  total_steps: 1000000

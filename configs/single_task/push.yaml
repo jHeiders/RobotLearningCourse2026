@@ -1,0 +1,10 @@
+# R3: success > 30 %.
+extends: ../base.yaml
+name: mt1-push
+
+env:
+  tasks: [push-v3]
+  envs_per_task: 4
+
+train:
+  total_steps: 2000000
