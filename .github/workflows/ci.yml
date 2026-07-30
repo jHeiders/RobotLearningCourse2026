@@ -26,7 +26,7 @@ jobs:
       - name: Lint
         run: uv run ruff check .
 
-      # Includes the end-to-end smoke train, so main can never carry a pipeline that
-      # fails only once someone launches a real run.
+      # Includes an end-to-end train + resume, so main can never carry a pipeline that
+      # only fails once someone launches a real run.
       - name: Test
         run: uv run pytest -q

@@ -3,7 +3,7 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "mtrl"
+name = "mtsac"
 version = "0.1.0"
 description = "From single-task to multi-task reinforcement learning on the Meta-World benchmark (384.195 Robot Learning course project)."
 readme = "README.md"
@@ -16,9 +16,8 @@ dependencies = [
     "pyyaml>=6.0",
     "tensorboard>=2.9.1",
     "wandb>=0.18",
-    "pandas>=2.0",
-    "matplotlib>=3.7",
-    "imageio>=2.31",
+    "tqdm>=4.66",
+    "rich>=13.0",
 ]
 
 [project.optional-dependencies]
@@ -28,11 +27,14 @@ dev = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["mtrl*"]
+include = ["mtsac*"]
 
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+# reference/ is other people's code. Generate_code_V2/ is scratch work that is not wired
+# into the project yet — drop it from this list once it is (or delete the folder).
+extend-exclude = ["reference", "Generate_code_V2"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]

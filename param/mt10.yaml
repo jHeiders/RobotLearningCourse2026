@@ -1,0 +1,35 @@
+# MT10: the full Meta-World MT10 task set. Target: mean success > 30 %.
+#
+# The long pole of the project — start it as early as the schedule allows. 20 M steps is
+# 2 M per task; lower total_steps if the wall-clock does not fit.
+
+algo: sac
+id: mt10
+tasks: mt10                   # named set, taken from Meta-World's own MT10 definition
+
+env:
+  max_episode_steps: 200
+  use_one_hot: true
+  vector_strategy: async
+
+sac:
+  policy: MlpPolicy
+  learning_rate: 3.0e-4
+  buffer_size: 300000
+  learning_starts: 5000
+  batch_size: 128
+  tau: 1.0e-3
+  gamma: 0.99
+  train_freq: 1
+  gradient_steps: 1
+  ent_coef: auto
+  target_entropy: auto
+  policy_kwargs:
+    net_arch: [512, 1024, 1024, 512]
+    log_std_init: -3
+
+train:
+  total_steps: 20000000       # 2 M per task
+  eval_freq: 200000
+  n_eval_episodes: 10
+  checkpoint_freq: 500000     # 0 disables; --resume continues from the latest

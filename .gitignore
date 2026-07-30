@@ -15,3 +15,5 @@ wandb/
 *.zip
 *.pt
 *.mp4
+
+reference/*

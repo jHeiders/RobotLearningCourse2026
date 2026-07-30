@@ -16,6 +16,9 @@
             "USER_GID": "1000"
         }
     },
+    "runArgs": [
+        "--name=meta-world-mtrl"
+    ],
     "remoteUser": "dev",
     "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=cached",
     "workspaceFolder": "/workspace",
@@ -45,7 +48,9 @@
                 "ms-toolsai.tensorboard"
             ],
             "settings": {
-                "python.defaultInterpreterPath": "/home/dev/.venv/bin/python",
+                // Must match UV_PROJECT_ENVIRONMENT in the Dockerfile: the virtualenv
+                // lives in the bind-mounted workspace, not in the user's home.
+                "python.defaultInterpreterPath": "/workspace/.venv/bin/python",
                 "python.testing.pytestEnabled": true
             }
         }

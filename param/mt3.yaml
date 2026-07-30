@@ -1,0 +1,35 @@
+# MT3: reach, push, pick-place in one policy. Target: mean success > 40 %.
+#
+# These are exactly the first three tasks of MT10, so the one-hot block here is a prefix
+# of the MT10 one — which is what makes the MT3 -> MT10 comparison clean.
+
+algo: sac
+id: mt3
+tasks: mt3                    # named set from mtsac/environments.py
+
+env:
+  max_episode_steps: 200
+  use_one_hot: true           # without this the policy cannot tell the tasks apart
+  vector_strategy: async
+
+sac:
+  policy: MlpPolicy
+  learning_rate: 3.0e-4
+  buffer_size: 300000         # one buffer shared by all tasks
+  learning_starts: 5000
+  batch_size: 128
+  tau: 1.0e-3
+  gamma: 0.99
+  train_freq: 1
+  gradient_steps: 1
+  ent_coef: auto
+  target_entropy: auto
+  policy_kwargs:
+    net_arch: [512, 1024, 1024, 512]
+    log_std_init: -3
+
+train:
+  total_steps: 6000000        # 2 M per task
+  eval_freq: 100000
+  n_eval_episodes: 10
+  checkpoint_freq: 200000     # 0 disables; --resume continues from the latest

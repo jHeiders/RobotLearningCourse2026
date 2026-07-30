@@ -1,0 +1,34 @@
+# Single task: reach. Target: success > 90 %.
+# The easiest task — treat it as the smoke test for the whole stack. If reach does not
+# clear 90 %, the problem is the plumbing, not the hyperparameters.
+
+algo: sac                     # key in mtsac/sac.py
+id: st_reach                  # run name -> results/st_reach_s<seed>/
+tasks: [reach-v3]
+
+env:
+  max_episode_steps: 500
+  use_one_hot: false          # one task, nothing to tell apart
+  vector_strategy: async
+
+sac:                          # passed straight to the SAC constructor
+  policy: MlpPolicy
+  learning_rate: 3.0e-4
+  buffer_size: 1000000
+  learning_starts: 5000
+  batch_size: 256
+  tau: 5.0e-3
+  gamma: 0.99
+  train_freq: 1
+  gradient_steps: -1          # one gradient step per environment step collected
+  ent_coef: auto
+  target_entropy: auto
+  policy_kwargs:
+    net_arch: [256, 256, 256]
+    log_std_init: -3
+
+train:
+  total_steps: 2000000
+  eval_freq: 100000           # environment steps between evaluations
+  n_eval_episodes: 10         # per task
+  checkpoint_freq: 200000     # 0 disables; --resume continues from the latest
