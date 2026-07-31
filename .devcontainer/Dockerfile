@@ -15,6 +15,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libegl1 \
         libglib2.0-0 \
         libosmesa6 \
+        libglx-mesa0 \
+        libgl1-mesa-dri \
+        libxrandr2 \
+        libxinerama1 \
+        libxcursor1 \
+        libxi6 \
+        libxext6 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN groupadd --gid ${USER_GID} ${USERNAME} \

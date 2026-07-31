@@ -64,9 +64,13 @@ To score or watch a trained policy:
 
 ```bash
 python play.py mt3                           # 20 episodes per task, prints success rates
-python play.py st_reach --render             # opens a viewer
+python play.py st_reach --render             # same, with a viewer window per task
 python play.py mt3 --model final_model --episodes 50
 ```
+
+`--render` draws on the host's display, which the container is given access to, so the
+window appears on your desktop like any other application. It needs a Linux graphical
+session; everything else in this project runs without one.
 
 ### Expected runtimes
 

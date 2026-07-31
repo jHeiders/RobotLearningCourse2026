@@ -19,6 +19,19 @@
     "runArgs": [
         "--name=meta-world-mtrl"
     ],
+    // MuJoCo's "human" render mode needs a real X server. Instead of running one inside
+    // the container, the host's display socket is passed in, so `--render` opens an
+    // ordinary window on your own desktop. Assumes a Linux host with a graphical session,
+    // which both of ours are; on a machine with no display only `--render` is affected.
+    "mounts": [
+        "source=/tmp/.X11-unix,target=/tmp/.X11-unix,type=bind"
+    ],
+    // Runs on the host before the container starts, so nobody has to type it: allows
+    // processes owned by your uid to use your X server. The container user has that same
+    // uid (see updateRemoteUserUID below), so this covers it. Most desktops already allow
+    // it and the command is then a no-op; "|| true" keeps a host without xhost — or
+    // without a display at all — from blocking the container from starting.
+    "initializeCommand": "xhost +SI:localuser:$(id -un) > /dev/null 2>&1 || true",
     "remoteUser": "dev",
     "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=cached",
     "workspaceFolder": "/workspace",
@@ -37,7 +50,15 @@
         // without WANDB_ENTITY they land in your personal account rather than the
         // shared team, where your partner cannot see them.
         "WANDB_API_KEY": "${localEnv:WANDB_API_KEY}",
-        "WANDB_ENTITY": "${localEnv:WANDB_ENTITY}"
+        "WANDB_ENTITY": "${localEnv:WANDB_ENTITY}",
+        // Overrides the Dockerfile's MUJOCO_GL=egl, which is offscreen-only and cannot
+        // open the window "human" mode asks for. The image keeps egl as its default so it
+        // still runs headless somewhere without a display, e.g. a cluster node.
+        "MUJOCO_GL": "glfw",
+        // Which display the viewer opens on — your host's. Passed through verbatim
+        // because devcontainer.json cannot express a default of ":0": its substitution
+        // splits the expression on ":", so the ":0" would arrive mangled.
+        "DISPLAY": "${localEnv:DISPLAY}"
     },
     "postCreateCommand": "uv sync --all-extras",
     "customizations": {

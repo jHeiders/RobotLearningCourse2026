@@ -26,6 +26,8 @@ def evaluate(model, env, n_episodes: int) -> tuple[np.ndarray, np.ndarray]:
         while not dones.all():
             actions, _ = model.predict(obs, deterministic=True)
             obs, rewards, dones, infos = env.step(actions)
+            if env.render_mode is not None:
+                env.render()
             returns += rewards
             for i, info in enumerate(infos):
                 hit[i] |= float(info.get("success", 0.0)) > 0.0

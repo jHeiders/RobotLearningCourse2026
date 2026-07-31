@@ -9,6 +9,8 @@
       "Bash(uv tree*)",
       "Bash(uv lock --check*)",
       "Bash(nvidia-smi*)",
+      "Bash(xwininfo*)",
+      "Bash(xdpyinfo*)",
       "Bash(pdftotext *)",
       "Bash(pdfinfo *)",
       "Bash(jupyter nbconvert --to script --stdout *)"
