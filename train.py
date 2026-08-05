@@ -89,6 +89,13 @@ def main(argv: list[str] | None = None) -> None:
             ckpt_dir / "model", env=train_env, tensorboard_log=str(run_dir / "tb")
         )
         model.load_replay_buffer(ckpt_dir / "replay_buffer")
+        if model.replay_buffer.n_envs != train_env.num_envs:
+            # SB3 swaps the pickled buffer in without checking its shape, so a checkpoint
+            # taken under a different `envs_per_task` would silently mismatch the collector.
+            raise ValueError(
+                f"{ckpt_dir} was written with {model.replay_buffer.n_envs} environment(s) but "
+                f"this config builds {train_env.num_envs}; start a fresh run instead of resuming"
+            )
         already_done = model.num_timesteps
         print(f"resumed from {ckpt_dir} at {already_done} steps")
     else:
@@ -112,6 +119,7 @@ def main(argv: list[str] | None = None) -> None:
             run_dir,
             eval_freq=cfg["train"]["eval_freq"],
             n_episodes=cfg["train"]["n_eval_episodes"],
+            patience=cfg["train"].get("patience"),
         )
     ]
     checkpoint_freq = cfg["train"].get("checkpoint_freq", 0)

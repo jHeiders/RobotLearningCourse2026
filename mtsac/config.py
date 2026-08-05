@@ -18,7 +18,7 @@ from mtsac.environments import make_env
 from mtsac.sac import ALGO_TABLE
 
 TOP_LEVEL = {"algo", "id", "tasks", "env", "sac", "train"}
-TRAIN_KEYS = {"total_steps", "eval_freq", "n_eval_episodes", "checkpoint_freq"}
+TRAIN_KEYS = {"total_steps", "eval_freq", "n_eval_episodes", "checkpoint_freq", "patience"}
 # `make_env` arguments that the run supplies itself, not the config.
 ENV_ARGS_SET_BY_CODE = {"tasks", "seed", "eval_mode", "render_mode"}
 

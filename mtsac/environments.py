@@ -49,21 +49,40 @@ def make_env(
     max_episode_steps: int = 500,
     use_one_hot: bool = True,
     vector_strategy: str = "async",
+    envs_per_task: int = 1,
     eval_mode: bool = False,
     render_mode: str | None = None,
 ) -> VecMonitor:
-    """One sub-environment per entry in ``tasks``.
+    """One sub-environment per entry in ``tasks``, times ``envs_per_task``.
 
     Meta-World builds the one-hot task id from the sub-environment index, so the one-hot
     and ``tasks`` line up by construction. Repeating a task in ``tasks`` runs it in
     several environments at once (only useful with ``use_one_hot: false``).
 
-    Evaluation runs synchronously and with its own seed window, so it sees different
-    goal variations than training.
+    ``envs_per_task`` repeats every task that many times. SAC learns off-policy from one
+    shared replay buffer, and a single environment feeds it one long, strongly correlated
+    trajectory: consecutive transitions share an object and goal placement, so a batch
+    covers almost none of the task's variation. On the harder manipulation tasks that is
+    enough to make the critic diverge instead of converge. Several environments stepped in
+    parallel decorrelate the buffer and cover several placements at once, at the same
+    number of transitions and gradient steps. It repeats the task, not the one-hot, so the
+    task id would no longer match the sub-environment index -- hence one-hot runs may not
+    use it.
+
+    Evaluation runs synchronously, one environment per task, and with its own seed window,
+    so it sees different goal variations than training.
     """
+    if envs_per_task < 1:
+        raise ValueError(f"envs_per_task must be >= 1, got {envs_per_task}")
+    if envs_per_task > 1 and use_one_hot:
+        raise ValueError("envs_per_task > 1 needs use_one_hot: false; see make_env's docstring")
+
+    # Evaluation reports one number per task and is not what training throughput depends
+    # on, so it keeps the plain one-environment-per-task layout.
+    copies = 1 if eval_mode else envs_per_task
     venv = gym.make_vec(
         "Meta-World/custom-mt-envs",
-        envs_list=list(tasks),
+        envs_list=[task for task in tasks for _ in range(copies)],
         vector_strategy="sync" if eval_mode else vector_strategy,
         seed=env_seed(seed, eval_mode),
         use_one_hot=use_one_hot,

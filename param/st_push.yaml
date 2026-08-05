@@ -8,6 +8,7 @@ env:
   max_episode_steps: 250
   use_one_hot: false
   vector_strategy: async
+  envs_per_task: 16           # one environment leaves the critic diverging; see make_env
 
 sac:
   policy: MlpPolicy
@@ -16,7 +17,11 @@ sac:
   learning_starts: 5000
   batch_size: 512
   tau: 5.0e-3
-  gamma: 0.99
+  # Push only pays out on contact: the reward sits at ~0.05 while the gripper travels,
+  # then jumps ~100x. At 0.99 the value of those rare payouts bootstraps toward
+  # 10/(1-gamma) = 1000, the critic smears that over states it cannot tell apart, and the
+  # policy collapses back to random around 30-45k steps. 0.95 caps it at 200 and holds.
+  gamma: 0.95
   train_freq: 1
   gradient_steps: -1
   ent_coef: auto
@@ -28,5 +33,5 @@ sac:
 train:
   total_steps: 2000000
   eval_freq: 100000
-  n_eval_episodes: 10
+  n_eval_episodes: 30          # 10 puts +-0.15 of noise on a 30 % target; eval is cheap
   checkpoint_freq: 200000     # 0 disables; --resume continues from the latest

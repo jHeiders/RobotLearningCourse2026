@@ -25,6 +25,7 @@ class EvalCallback(BaseCallback):
         run_dir: Path,
         eval_freq: int,
         n_episodes: int = 10,
+        patience: int | None = None,
         verbose: int = 1,
     ) -> None:
         super().__init__(verbose)
@@ -33,8 +34,11 @@ class EvalCallback(BaseCallback):
         self.run_dir = Path(run_dir)
         self.eval_freq = eval_freq
         self.n_episodes = n_episodes
+        self.patience = patience
         self.best_success = -1.0
         self._next_eval = 0
+        self._stale_evals = 0
+        self._stop = False
         # Several environments may run the same task; report one number per task.
         self._by_task: dict[str, list[int]] = {}
         for i, task in enumerate(self.tasks):
@@ -44,7 +48,7 @@ class EvalCallback(BaseCallback):
         if self.num_timesteps >= self._next_eval:
             self._next_eval = self.num_timesteps + self.eval_freq
             self.run_eval()
-        return True
+        return not self._stop
 
     def run_eval(self) -> dict[str, float]:
         successes, returns = evaluate(self.model, self.eval_env, self.n_episodes)
@@ -66,6 +70,17 @@ class EvalCallback(BaseCallback):
 
         if mean > self.best_success:
             self.best_success = mean
+            self._stale_evals = 0
             self.model.save(self.run_dir / "best_model")
+        else:
+            self._stale_evals += 1
+
+        if self.patience is not None and self._stale_evals >= self.patience:
+            self._stop = True
+            if self.verbose:
+                print(
+                    f"[eval @ {self.num_timesteps} steps] no improvement over "
+                    f"{self.patience} evals, stopping early"
+                )
 
         return per_task
