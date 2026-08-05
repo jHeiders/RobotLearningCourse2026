@@ -23,7 +23,10 @@ First build takes ~10 minutes; it installs everything and puts the virtualenv on
 `uv run`, no `activate`. On Windows, clone into the WSL2 filesystem (`~/projects/...`),
 not `/mnt/c/...`; native Windows Python is not supported.
 
-A GPU is optional; CPU-only is 2–3× slower.
+A GPU is optional; CPU-only is 2–3× slower. To use one you need the NVIDIA driver **and**
+the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
+on the host — the image ships no CUDA of its own. Check with `python -c "import torch;
+print(torch.cuda.is_available())"` inside the container.
 
 If you ever change dependencies, re-run `uv sync --all-extras` (that is the only place
 `uv` is still used — it installs `.venv` and keeps `uv.lock` pinned for reproducibility).
@@ -88,15 +91,30 @@ Running 2–3 jobs concurrently on one machine costs 20–30 % per-job throughpu
 
 ### Weights & Biases
 
-One-time, on each machine:
+Set up **on the host, not in the container**. The container's home directory lives in the
+image, so a `wandb login` inside it is lost on the next rebuild; `devcontainer.json`
+instead passes `WANDB_API_KEY` and `WANDB_ENTITY` through from the host environment.
+
+One-time, on each machine, add to `~/.bashrc` (copy the key from
+<https://wandb.ai/authorize>):
 
 ```bash
-wandb login
+export WANDB_API_KEY=<your key>
+export WANDB_ENTITY=robotlearningcourse2026
 ```
 
-Team (`robotlearningcourse2026`) and project (`robot-learning-mtrl`) are the defaults in
-`train.py`; override the team with `$WANDB_ENTITY`. W&B is opt-in per run, so runs work
-without it. `WANDB_MODE=offline` records locally, then `wandb sync wandb/offline-run-*`.
+Then `source ~/.bashrc` and start VS Code **from that shell** (`code /path/to/repo`), or
+log out and back in first — a VS Code launched from the desktop menu never read your
+`.bashrc` and passes through empty values. After changing either variable, *Dev
+Containers: Rebuild Container*; `remoteEnv` is only read when the container starts.
+
+To check inside the container: `echo $WANDB_ENTITY` — if it is empty, the host export did
+not reach VS Code.
+
+Project (`robot-learning-mtrl`) and the team default (`robotlearningcourse2026`) are in
+`train.py`, so `WANDB_ENTITY` only matters if you want to override it — but without it set
+anywhere, `wandb` still needs the API key. W&B is opt-in per run, so runs work without any
+of this. `WANDB_MODE=offline` records locally, then `wandb sync wandb/offline-run-*`.
 
 Seeds of one config share a W&B group, so the dashboard stays readable. Before
 launching, filter the shared project for `<id>_s<seed>` — if it is there, someone has
