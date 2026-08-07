@@ -28,6 +28,14 @@ the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/c
 on the host — the image ships no CUDA of its own. Check with `python -c "import torch;
 print(torch.cuda.is_available())"` inside the container.
 
+Having the driver is not enough on its own: the toolkit is what lets Docker hand a GPU to
+a container, and without it the container sees no GPU and has no `nvidia-smi`, even though
+`nvidia-smi` works on the host. Test the host with `docker run --rm --gpus all ubuntu
+nvidia-smi`; if that fails, install the toolkit and run `sudo nvidia-ctk runtime configure
+--runtime=docker && sudo systemctl restart docker`. If it passes but the container still
+reports no GPU, VS Code is not passing `--gpus` — add `"--gpus=all"` to `runArgs` locally,
+but do not commit it, as it stops the container from starting on a machine without one.
+
 If you ever change dependencies, re-run `uv sync --all-extras` (that is the only place
 `uv` is still used — it installs `.venv` and keeps `uv.lock` pinned for reproducibility).
 
