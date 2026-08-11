@@ -1,0 +1,66 @@
+# MT3 with no per-task constants: the same number of environments for every task.
+#
+# param/mt3_tuned.yaml reaches 0.967 mean, but only because we hand-set
+# `envs_per_task: {reach: 2, push: 4, pick-place: 9}` after watching pick-place fail. That
+# does not transfer to ten tasks, and "we tuned it until it worked" is not a result. This
+# config is the same run with one uniform number instead.
+#
+# Why uniform 9 and not uniform 5, which is what already failed. mt3_tuned changed two
+# things at once for pick-place: it raised that task's share of the collected data (0.33 ->
+# 0.60) and it raised its environment count (5 -> 9). Two probes separate them:
+#
+#   B  uniform 5, ten times the optimization      pick-place 0.00 @600k
+#   D  uniform 5, per-task value normalization    pick-place 0.00 @600k
+#   E  uniform 5, replay share raised to 0.46-0.58  pick-place 0.00 @600k (one 0.17 blip)
+#   C  hand 2/4/9, share 0.60, 9 environments     pick-place 0.23 @400k, 0.80 @500k
+#
+# E matched C's share on the gradient side and changed nothing, so share is not the
+# mechanism. Environment count is what is left, and it is also what fixed the single-task
+# runs: push and pick-place both needed `envs_per_task: 16` to stop the critic diverging.
+# Five parallel environments give pick-place too little variation in object and goal
+# placement for a batch to cover the task; nine cleared it in mt3_tuned.
+#
+# So this config gives every task nine, which leaves pick-place's share at 0.33 -- lower
+# than arm E gave it -- and changes only the count. If pick-place learns here, the whole
+# MT3 result rests on one scalar that is not per-task, and MT10 is the same file with
+# `tasks: mt10`.
+
+algo: sac
+id: mt3_wide
+tasks: mt3
+
+env:
+  max_episode_steps: 200
+  use_one_hot: true           # without this the policy cannot tell the tasks apart
+  vector_strategy: async
+  envs_per_task: 9            # uniform: no task is named anywhere in this file
+
+sac:
+  policy: MlpPolicy
+  learning_rate: 3.0e-4
+  buffer_size: 300000
+  learning_starts: 5000
+  # Multi-task convention: ~128 samples per task, so this scales with the task set rather
+  # than being retuned. MT3 -> 384, MT10 -> 1280.
+  batch_size: 384
+  tau: 1.0e-3
+  gamma: 0.95                 # a solved task is worth 10/(1-gamma) = 200, not 1000
+  train_freq: 1
+  # `train_freq` counts env.step() calls, so each round collects 27 transitions. 18 updates
+  # on them is UTD 0.67, the same ratio mt3_tuned ran at with 15 environments and 10
+  # updates. Holding it fixed is the point: environment count is meant to be the only
+  # difference between this config and that one.
+  gradient_steps: 18
+  ent_coef: auto
+  target_entropy: auto
+  policy_kwargs:
+    net_arch: [512, 1024, 1024, 512]
+    log_std_init: -3
+
+train:
+  total_steps: 6000000
+  eval_freq: 100000
+  n_eval_episodes: 30
+  checkpoint_freq: 200000     # 0 disables; --resume continues from the latest
+  patience: 25                # stop after 25 evals with no new best. The longest such
+                              # gap in the MT3 run that reached 0.944 mean was 19.

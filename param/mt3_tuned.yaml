@@ -1,0 +1,76 @@
+# MT3 with the update budget pick-place needs. Target: mean success > 40 %.
+#
+# param/mt3.yaml clears the threshold on the mean (0.60) but leaves pick-place at 0.00:
+# reach 1.00, push 0.80, pick-place 0.00 after 6 M steps. It is not a near miss -- eval
+# return was 3 against the scripted expert's 1547, so the policy never learned the task at
+# all. Two causes, one config each:
+#
+# 1. Budget. Single-task pick-place solves this at UTD 1.0 with batch 1024, i.e. ~2.05 B
+#    sample-updates spent on one task. mt3.yaml gives UTD 0.067 at batch 128, and splits it
+#    three ways: ~17 M sample-updates on pick-place, about 120x less. Fine for reach and
+#    push, nowhere near enough for the hardest task.
+# 2. Scale. At gamma 0.99 a solved task is worth 10/(1-gamma) = 1000, so reach sits near
+#    970 while pick-place, earning nothing, sits near 5. One shared critic trained on
+#    uniformly mixed batches has its squared error dominated by the O(100s) terms; the
+#    O(1) pick-place errors barely enter the gradient. gamma 0.95 caps a solved task at
+#    200 and shrinks that spread ~5x.
+#
+# Measured: (1) and (2) alone lift reach to 1.00 by 100k and push to 0.33 by 600k, but
+# leave pick-place at 0.00 -- so a third change, the uneven split under `envs_per_task`.
+# Episode length was ruled out separately: pick-place at 200-step episodes reaches 0.67
+# success by 300k standalone, against 0.50 at 600k with 1000-step ones, so MT3's 200 is
+# helping it, not gating it.
+#
+# Kept from mt3.yaml so the comparison stays honest: the run id is separate, so this does
+# not overwrite the baseline in results/mt3_s0.
+
+algo: sac
+id: mt3_tuned
+tasks: mt3                    # named set from mtsac/environments.py
+
+env:
+  max_episode_steps: 200
+  use_one_hot: true           # without this the policy cannot tell the tasks apart
+  vector_strategy: async
+  # Every environment contributes one transition per round, so this is each task's share of
+  # the buffer. An even 5/5/5 spends a third of everything on reach, which is solved inside
+  # 100k steps, while pick-place -- which never gets off zero -- gets the same third. 15
+  # environments either way, so throughput is unchanged; pick-place just gets 60 % of the
+  # data instead of 33 %.
+  envs_per_task:
+    reach-v3: 2
+    push-v3: 4
+    pick-place-v3: 9
+
+sac:
+  policy: MlpPolicy
+  learning_rate: 3.0e-4
+  buffer_size: 300000         # one buffer shared by all tasks
+  learning_starts: 5000
+  batch_size: 256             # 128 leaves ~43 samples per task per update; 256 gives ~85
+  tau: 1.0e-3
+  gamma: 0.95                 # see (2) above
+  train_freq: 1
+  # `train_freq` counts env.step() calls, so with 15 environments each round collects 15
+  # transitions, and this many updates on them is UTD 0.67 -- ten times mt3.yaml's 0.067.
+  #
+  # Counting in updates that actually land on pick-place: batch 256 at a 60 % share is
+  # ~102 pick-place sample-updates per environment step, against 1024 for the standalone
+  # run, which took off at 200k steps and hit 0.67 success at 300k. So expect takeoff near
+  # 2 M and success near 3 M, inside the 6 M budget. At `gradient_steps: 5` those land at
+  # 4 M and 6 M -- right on the budget edge, which is no margin for a rough extrapolation.
+  # Full UTD 1.0 (`-1`) would be 6 M updates on this network: days, not hours.
+  gradient_steps: 10
+  ent_coef: auto
+  target_entropy: auto
+  policy_kwargs:
+    net_arch: [512, 1024, 1024, 512]
+    log_std_init: -3
+
+train:
+  total_steps: 6000000        # 2 M per task
+  eval_freq: 100000
+  n_eval_episodes: 30         # 10 puts +-0.15 of noise on a 40 % target; eval is cheap
+  checkpoint_freq: 200000     # 0 disables; --resume continues from the latest
+  patience: 25                # stop after 25 evals with no new best. The longest such
+                              # gap in the MT3 run that reached 0.944 mean was 19.

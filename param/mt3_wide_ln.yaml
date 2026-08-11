@@ -1,0 +1,48 @@
+# param/mt3_wide.yaml, but with the principled fix for critic divergence instead of the
+# blunt one.
+#
+# Every working config in this project sets `gamma: 0.95`. That works, but it works by
+# shortening the horizon until a solved task is worth 10/(1-gamma) = 200 instead of 1000,
+# which is a cap on the symptom: the critic diverges, so we shrink what it can diverge to.
+# The standard modern answer is normalisation inside the critic (BRO, SimBa, CrossQ all do
+# this), which stabilises the value function directly.
+#
+# So this config puts LayerNorm after each hidden layer of the critic and puts gamma back
+# to 0.99. If it trains as well as mt3_wide, the horizon cap was never necessary and the
+# result stops depending on a hyperparameter we picked by hand after watching push fail --
+# which is the property we need before scaling the task set.
+#
+# The actor is left alone; only the critic is normalised. See LayerNormSACPolicy.
+
+algo: sac
+id: mt3_wide_ln
+tasks: mt3
+
+env:
+  max_episode_steps: 200
+  use_one_hot: true
+  vector_strategy: async
+  envs_per_task: 9            # uniform, as in mt3_wide: no task is named in this file
+
+sac:
+  policy: LayerNormSACPolicy
+  learning_rate: 3.0e-4
+  buffer_size: 300000
+  learning_starts: 5000
+  batch_size: 384
+  tau: 1.0e-3
+  gamma: 0.99                 # deliberately back to the default; the critic is normalised
+  train_freq: 1
+  gradient_steps: 18          # UTD 0.67 across 27 environments, same as mt3_wide
+  ent_coef: auto
+  target_entropy: auto
+  policy_kwargs:
+    net_arch: [512, 1024, 1024, 512]
+    log_std_init: -3
+
+train:
+  total_steps: 6000000
+  eval_freq: 100000
+  n_eval_episodes: 30
+  checkpoint_freq: 200000
+  patience: 25

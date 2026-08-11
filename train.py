@@ -19,9 +19,9 @@ from stable_baselines3.common.callbacks import CallbackList
 
 from mtsac.callback import EvalCallback
 from mtsac.checkpoint import LatestCheckpointCallback
-from mtsac.config import load_config
-from mtsac.environments import make_env, resolve_tasks
-from mtsac.sac import ALGO_TABLE
+from mtsac.config import algo_keys, load_config
+from mtsac.environments import env_task_ids, make_env, resolve_tasks
+from mtsac.sac import ALGO_TABLE, POLICY_TABLE, REPLAY_BUFFER_TABLE
 
 ROOT = Path(__file__).resolve().parent
 
@@ -58,6 +58,22 @@ def main(argv: list[str] | None = None) -> None:
     train_env = make_env(tasks, seed=args.seed, **cfg["env"])
     eval_env = make_env(tasks, seed=args.seed, eval_mode=True, **cfg["env"])
 
+    # A config can only name classes as strings. Everything the run itself knows -- how
+    # many tasks there are, and which task each sub-environment runs -- is filled in here
+    # rather than repeated in every param file.
+    sac_kwargs = dict(cfg["sac"])
+    sac_kwargs["policy"] = POLICY_TABLE.get(sac_kwargs["policy"], sac_kwargs["policy"])
+    if "num_tasks" in algo_keys(algo := ALGO_TABLE[cfg["algo"]]):
+        sac_kwargs.setdefault("num_tasks", len(tasks))
+    buffer_name = sac_kwargs.get("replay_buffer_class")
+    if buffer_name in REPLAY_BUFFER_TABLE:
+        sac_kwargs["replay_buffer_class"] = REPLAY_BUFFER_TABLE[buffer_name]
+        buffer_kwargs = dict(sac_kwargs.get("replay_buffer_kwargs") or {})
+        buffer_kwargs.setdefault(
+            "task_ids", env_task_ids(tasks, cfg["env"].get("envs_per_task", 1))
+        )
+        sac_kwargs["replay_buffer_kwargs"] = buffer_kwargs
+
     wandb_run = None
     if args.wandb:
         import wandb
@@ -73,7 +89,6 @@ def main(argv: list[str] | None = None) -> None:
             sync_tensorboard=True,
         )
 
-    algo = ALGO_TABLE[cfg["algo"]]
     ckpt_dir = run_dir / "checkpoint"
     already_done = 0
 
@@ -96,6 +111,14 @@ def main(argv: list[str] | None = None) -> None:
                 f"{ckpt_dir} was written with {model.replay_buffer.n_envs} environment(s) but "
                 f"this config builds {train_env.num_envs}; start a fresh run instead of resuming"
             )
+        # The checkpoint pickles the buffer class the run was started with, so a uniform run
+        # resumed under a curriculum config comes back as a plain buffer -- which the eval
+        # callback skips, leaving the curriculum silently switched off.
+        buffer_class = sac_kwargs.get("replay_buffer_class")
+        if buffer_class is not None and not isinstance(model.replay_buffer, buffer_class):
+            model.replay_buffer = buffer_class.adopt(
+                model.replay_buffer, **sac_kwargs["replay_buffer_kwargs"]
+            )
         already_done = model.num_timesteps
         print(f"resumed from {ckpt_dir} at {already_done} steps")
     else:
@@ -104,7 +127,7 @@ def main(argv: list[str] | None = None) -> None:
             seed=args.seed,
             verbose=1,
             tensorboard_log=str(run_dir / "tb"),
-            **cfg["sac"],
+            **sac_kwargs,
         )
 
     remaining = cfg["train"]["total_steps"] - already_done

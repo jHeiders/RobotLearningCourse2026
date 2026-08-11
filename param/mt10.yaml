@@ -1,27 +1,61 @@
-# MT10: the full Meta-World MT10 task set. Target: mean success > 30 %.
+# param/mt3_uniform.yaml scaled from three tasks to ten. Nothing here is task-specific.
 #
-# The long pole of the project — start it as early as the schedule allows. 20 M steps is
-# 2 M per task; lower total_steps if the wall-clock does not fit.
+# mt3_uniform reached 1.00 on all three tasks with no task named anywhere in it, so the
+# method carries over unchanged. What does not carry over unchanged are the settings that
+# are shared across tasks: they are totals, and a total split ten ways is a third of a
+# total split three ways. Three of them had to be rescaled, all by the same 10/3.
+#
+#   buffer_size      Under a uniform split a task retains buffer_size / n_tasks
+#                    transitions, whatever its environment count -- SB3 keeps
+#                    buffer_size // n_envs per environment, and a task owns n_envs /
+#                    n_tasks of them. mt3_uniform retained 333k per task; leaving 1M here
+#                    would retain 100k, which is exactly the level at which every failed
+#                    probe learned pick-place and then forgot it. 3.3M restores 330k.
+#                    ~1.4 GB resident, and the same per checkpoint on disk.
+#
+#   gradient_steps   18 was chosen for 27 environments. At 90, one round collects 90
+#                    transitions, so 18 would give each collected transition a third as
+#                    much training. 60 holds the ratio at 0.67.
+#
+#   total_steps      MT3 was solved at 2.2M; the remaining 2.8M only confirmed it. That is
+#                    730k per task, so ten tasks want ~7.3M. 10M leaves headroom, since
+#                    MT10 contains tasks harder than pick-place.
+#
+# Everything else is byte-for-byte mt3_uniform, including envs_per_task. Environment count
+# is free in wall-clock -- at a fixed batch size and a fixed training-to-collection ratio,
+# throughput does not depend on how many environments run, because the extra transitions
+# and the extra gradient steps scale together. Measured here: 90 environments step at
+# ~12,000 transitions/s using under 2 GB, against the ~53/s the GPU can train on. The GPU
+# is the entire cost, and batch_size is what sets it.
+#
+# batch_size stays at 384, which is 38 samples per task per gradient step against MT3's
+# 128. It is the one quantity that genuinely degrades here and cannot be fixed for free:
+# doubling the batch roughly halves throughput. Left as is, and to be revisited only if
+# the easy tasks are not climbing within the first million steps.
+#
+# Expect ~53 steps/s, so ~52 hours. Early stopping needs all ten tasks idle for 25
+# evaluations and will most likely never fire, so total_steps is the real budget.
 
 algo: sac
 id: mt10
-tasks: mt10                   # named set, taken from Meta-World's own MT10 definition
+tasks: mt10
 
 env:
   max_episode_steps: 200
   use_one_hot: true
   vector_strategy: async
+  envs_per_task: 9            # uniform: no task is named in this file
 
 sac:
-  policy: MlpPolicy
+  policy: LayerNormSACPolicy
   learning_rate: 3.0e-4
-  buffer_size: 300000
+  buffer_size: 3300000        # 330k retained per task, matching mt3_uniform
   learning_starts: 5000
-  batch_size: 128
+  batch_size: 384
   tau: 1.0e-3
-  gamma: 0.99
+  gamma: 0.95
   train_freq: 1
-  gradient_steps: 1
+  gradient_steps: 60          # 0.67 gradient steps per collected transition, as on MT3
   ent_coef: auto
   target_entropy: auto
   policy_kwargs:
@@ -29,7 +63,8 @@ sac:
     log_std_init: -3
 
 train:
-  total_steps: 20000000       # 2 M per task
-  eval_freq: 200000
-  n_eval_episodes: 10
-  checkpoint_freq: 500000     # 0 disables; --resume continues from the latest
+  total_steps: 10000000
+  eval_freq: 100000
+  n_eval_episodes: 30
+  checkpoint_freq: 200000
+  patience: 25

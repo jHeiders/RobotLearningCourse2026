@@ -34,7 +34,9 @@ def test_valid_config_loads(tmp_path):
 
 def test_shipped_configs_all_load():
     configs = sorted(PARAM_DIR.glob("*.yaml"))
-    assert len(configs) == 5
+    # The configs the README's result table depends on. Pinning the names rather than the
+    # count catches a deleted or renamed one while leaving room for tuning variants.
+    assert {"st_reach", "st_push", "st_pick_place", "mt3", "mt10"} <= {p.stem for p in configs}
     for path in configs:
         load_config(path)
 

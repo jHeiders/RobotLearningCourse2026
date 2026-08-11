@@ -1,0 +1,49 @@
+# Normalization + curriculum + per-task alpha
+#
+# Ablation arm H for the MT3 study. Uniform 5/5/5 split -- unlike param/mt3_tuned.yaml,
+# nothing here is hand-set per task. Controls already measured:
+#   A param/mt3.yaml        uniform, no extensions            pick-place 0.00 (mean 0.60 @6M)
+#   B tuned-uniform probe   uniform, 10x optimization          pick-place 0.00 @600k
+#   C param/mt3_tuned.yaml  hand 2/4/9                         pick-place 0.23 @400k, 0.80 @500k
+# An arm passes if pick-place reaches >= 0.5 by 600k with the uniform split.
+
+algo: mtsac
+id: mt3_norm_curr_alpha
+tasks: mt3
+
+env:
+  max_episode_steps: 200
+  use_one_hot: true           # the task id the per-task parts read back out
+  vector_strategy: async
+  envs_per_task: 5            # uniform on purpose: allocation is what is being tested
+
+sac:
+  policy: MlpPolicy
+  learning_rate: 3.0e-4
+  buffer_size: 300000
+  learning_starts: 5000
+  # Multi-task convention: ~128 samples per task, so this scales with the task set rather
+  # than being retuned. MT3 -> 384, MT10 -> 1280.
+  batch_size: 384
+  tau: 1.0e-3
+  gamma: 0.95
+  train_freq: 1
+  gradient_steps: 10          # UTD 0.67 across 15 environments
+  ent_coef: auto
+  target_entropy: auto
+  normalize_critic_loss: true
+  replay_buffer_class: TaskWeightedReplayBuffer
+  replay_buffer_kwargs:
+    floor: 0.1                # a solved task keeps a share, so it is not forgotten
+    cap: 0.6                  # a stuck task cannot take the whole budget
+  per_task_alpha: true
+  policy_kwargs:
+    net_arch: [512, 1024, 1024, 512]
+
+train:
+  total_steps: 6000000
+  eval_freq: 100000
+  n_eval_episodes: 30
+  checkpoint_freq: 200000
+  patience: 25                # stop after 25 evals with no new best. The longest such
+                              # gap in the MT3 run that reached 0.944 mean was 19.

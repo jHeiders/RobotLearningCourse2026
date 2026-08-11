@@ -32,3 +32,5 @@ train:
   eval_freq: 100000           # environment steps between evaluations
   n_eval_episodes: 10         # per task
   checkpoint_freq: 200000     # 0 disables; --resume continues from the latest
+  patience: 12                # stop after 12 evals with no new best. The longest such
+                              # gap in a single-task run that went on to solve was 8.

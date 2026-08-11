@@ -7,7 +7,7 @@ from typing import Any
 import gymnasium as gym
 import numpy as np
 from gymnasium.vector import VectorEnv
-from stable_baselines3.common.vec_env import VecEnv
+from stable_baselines3.common.vec_env import VecEnv, VecEnvWrapper
 
 
 def split_infos(infos: dict[str, Any], num_envs: int) -> list[dict[str, Any]]:
@@ -108,3 +108,45 @@ class GymVecToSB3(VecEnv):
     def env_is_wrapped(self, wrapper_class: type[gym.Wrapper], indices: Any = None) -> list[bool]:
         # Sub-environments come from Meta-World, not from a stack of SB3 wrappers.
         return [False] * len(list(self._get_indices(indices)))
+
+
+class AppendTaskOneHot(VecEnvWrapper):
+    """Append a one-hot task id to every observation.
+
+    Meta-World appends this itself, but it takes the id from the sub-environment index and
+    the width from the number of sub-environments. Running a task in several environments
+    at once would therefore give every copy its own id and widen the vector, which says the
+    copies are different tasks. Building it here instead keeps the width at the number of
+    distinct tasks and gives every copy of a task the same id, so ``envs_per_task`` and the
+    one-hot can be used together.
+
+    The one-hot is fixed per sub-environment, so it also has to be appended to
+    ``terminal_observation``: SAC bootstraps from it, and an unencoded terminal state would
+    be the wrong shape.
+    """
+
+    def __init__(self, venv: VecEnv, task_ids: list[int], num_tasks: int) -> None:
+        width = venv.observation_space.shape[0] + num_tasks
+        super().__init__(
+            venv,
+            observation_space=gym.spaces.Box(
+                low=-np.inf, high=np.inf, shape=(width,), dtype=np.float32
+            ),
+        )
+        self.one_hot = np.zeros((venv.num_envs, num_tasks), dtype=np.float32)
+        self.one_hot[np.arange(venv.num_envs), task_ids] = 1.0
+
+    def _append(self, obs: np.ndarray) -> np.ndarray:
+        return np.concatenate([obs, self.one_hot], axis=1)
+
+    def reset(self) -> np.ndarray:
+        return self._append(self.venv.reset())
+
+    def step_wait(self):
+        obs, rewards, dones, infos = self.venv.step_wait()
+        for i, info in enumerate(infos):
+            if "terminal_observation" in info:
+                info["terminal_observation"] = np.concatenate(
+                    [info["terminal_observation"], self.one_hot[i]]
+                )
+        return self._append(obs), rewards, dones, infos

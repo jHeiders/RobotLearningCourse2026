@@ -23,6 +23,21 @@ TRAIN_KEYS = {"total_steps", "eval_freq", "n_eval_episodes", "checkpoint_freq", 
 ENV_ARGS_SET_BY_CODE = {"tasks", "seed", "eval_mode", "render_mode"}
 
 
+def algo_keys(algo: type) -> set[str]:
+    """Every constructor argument an algorithm accepts, including inherited ones.
+
+    A variant subclasses SB3's ``SAC`` and takes its own arguments plus ``**kwargs``, so
+    its own signature no longer lists what it forwards. Walking the class hierarchy keeps
+    the check tight for both the variant's arguments and SAC's.
+    """
+    names: set[str] = set()
+    for cls in algo.__mro__:
+        init = cls.__dict__.get("__init__")
+        if init is not None:
+            names |= set(inspect.signature(init).parameters)
+    return names - {"self", "args", "kwargs"}
+
+
 def _reject_unknown(section: dict[str, Any], allowed: set[str], where: str) -> None:
     unknown = sorted(set(section) - allowed)
     if unknown:
@@ -44,6 +59,6 @@ def load_config(path: Path) -> dict[str, Any]:
     _reject_unknown(cfg["env"], env_keys, "env")
     _reject_unknown(cfg["train"], TRAIN_KEYS, "train")
     # Validated against the selected algorithm, so a variant's extra arguments are fine.
-    _reject_unknown(cfg["sac"], set(inspect.signature(ALGO_TABLE[cfg["algo"]]).parameters), "sac")
+    _reject_unknown(cfg["sac"], algo_keys(ALGO_TABLE[cfg["algo"]]), "sac")
 
     return cfg

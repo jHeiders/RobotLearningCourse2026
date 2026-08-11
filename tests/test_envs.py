@@ -65,6 +65,51 @@ def test_multi_task_one_hot_width_and_ordering():
         env.close()
 
 
+def test_one_hot_is_shared_by_every_copy_of_a_task():
+    """``envs_per_task`` repeats the task, not the task id, so MT3 stays three wide."""
+    env = _env(MT3_TASKS, envs_per_task=2)
+    try:
+        assert env.num_envs == 6
+        assert env.observation_space.shape == (39 + 3,)
+        obs = env.reset()
+        # Copies stay grouped by task, in `tasks` order.
+        assert np.array_equal(obs[:, -3:], np.repeat(np.eye(3, dtype=np.float32), 2, axis=0))
+    finally:
+        env.close()
+
+
+def test_envs_per_task_accepts_a_per_task_split():
+    """The split is what sets each task's share of the replay buffer."""
+    env = _env(MT3_TASKS, envs_per_task={"reach-v3": 1, "push-v3": 2, "pick-place-v3": 3})
+    try:
+        assert env.num_envs == 6
+        obs = env.reset()
+        expected = np.repeat(np.eye(3, dtype=np.float32), [1, 2, 3], axis=0)
+        assert np.array_equal(obs[:, -3:], expected)
+    finally:
+        env.close()
+
+    with pytest.raises(ValueError, match="not in tasks"):
+        _env(MT3_TASKS, envs_per_task={"door-open-v3": 2})
+
+
+def test_one_hot_survives_the_terminal_observation():
+    """SAC bootstraps from the terminal observation, so it needs the id too."""
+    env = _env(MT3_TASKS, envs_per_task=2)
+    try:
+        env.reset()
+        for _ in range(SHORT_EPISODE):
+            _, _, dones, infos = env.step(
+                np.zeros((env.num_envs, *env.action_space.shape), dtype=np.float32)
+            )
+        assert dones.all()
+        terminal = np.stack([info["terminal_observation"] for info in infos])
+        assert terminal.shape == (6, 39 + 3)
+        assert np.array_equal(terminal[:, -3:], np.repeat(np.eye(3, dtype=np.float32), 2, axis=0))
+    finally:
+        env.close()
+
+
 def test_terminal_transition_is_sb3_shaped():
     """Meta-World episodes end by truncation; SB3 must be told so it keeps bootstrapping."""
     env = _env(MT3_TASKS)

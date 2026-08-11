@@ -1,0 +1,58 @@
+# The candidate uniform config: no task is named anywhere in this file.
+#
+# param/mt3_wide_ln95.yaml (uniform 9 environments, normalised critic, gamma 0.95) is the
+# best uniform run so far -- pick-place peaked at 441 eval return and touched 0.50 success,
+# where no other uniform config exceeded 149 or 0.33. But it does not hold: across the last
+# six checkpoints its pick-place success read 0.17, 0.00, 0.17, 0.50, 0.00, 0.17, with the
+# return dropping from 441 to 3.9 inside one 50k interval. Learn, forget, relearn.
+#
+# The replay buffer is the one thing that has been held at 300k transitions through every
+# arm, and it is a FIFO shared by all tasks. SB3 splits it evenly across environments, so
+# capacity per environment is buffer_size / n_envs:
+#
+#   mt3_tuned   15 environments -> 20,000 steps each, 9 on pick-place -> ~180k retained
+#   every uniform arm  27 environments -> 11,100 steps each, 9 on pick-place -> ~100k
+#
+# At 200-step episodes that is 100 episodes of history per environment against 55. Pick-place
+# succeeds rarely, so its successful episodes are a thin tail of the buffer; halve the
+# retention and they are evicted before the critic consolidates them. That fits the observed
+# oscillation, and it explains why hand-tuning the split worked without anyone intending it
+# to -- more environments on a task is also more retained history for that task. The
+# single-task pick-place run that reached 0.80 used buffer_size 800000.
+#
+# So this config changes buffer_size and nothing else. It is the last per-task-free knob we
+# have not moved, and unlike the split it does not mention a task: one buffer, one number.
+# ~1M transitions x ~360 bytes is well under a gigabyte of RAM.
+
+algo: sac
+id: mt3_uniform
+tasks: mt3
+
+env:
+  max_episode_steps: 200
+  use_one_hot: true
+  vector_strategy: async
+  envs_per_task: 9            # uniform: no task is named in this file
+
+sac:
+  policy: LayerNormSACPolicy  # peaked 3x higher than the plain critic; see mt3_wide_ln95
+  learning_rate: 3.0e-4
+  buffer_size: 1000000        # 37,000 steps per environment, ~3x mt3_wide_ln95's retention
+  learning_starts: 5000
+  batch_size: 384
+  tau: 1.0e-3
+  gamma: 0.95
+  train_freq: 1
+  gradient_steps: 18          # UTD 0.67 across 27 environments
+  ent_coef: auto
+  target_entropy: auto
+  policy_kwargs:
+    net_arch: [512, 1024, 1024, 512]
+    log_std_init: -3
+
+train:
+  total_steps: 6000000
+  eval_freq: 100000
+  n_eval_episodes: 30
+  checkpoint_freq: 200000
+  patience: 25

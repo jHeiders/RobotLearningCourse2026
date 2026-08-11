@@ -1,0 +1,49 @@
+# param/mt3_wide.yaml plus a normalised critic, and nothing else changed.
+#
+# mt3_wide (uniform 9 environments, gamma 0.95) showed pick-place learning and then losing
+# it, over and over: eval return went 61, 54, 6, 30, 3, 116, 149, 4 across 600k steps, with
+# success touching 0.33 and falling back to 0.00. At uniform 5 the same return never left
+# the 3-8 band, so the extra environments are what let the task be learned at all -- but
+# the policy does not hold on to it. A 149 -> 4 collapse inside one 50k interval is the
+# value function diverging, not evaluation noise.
+#
+# LayerNorm after each hidden layer of the critic is the standard fix for exactly that
+# (BRO, SimBa, CrossQ), so this config adds it and changes nothing else. Against mt3_wide
+# it isolates the normalisation; against param/mt3_wide_ln.yaml, which also puts gamma back
+# to 0.99, it separates "the normalisation stabilises training" from the stronger claim
+# "the normalisation makes the hand-picked gamma unnecessary".
+#
+# The actor is left alone; only the critic is normalised. See LayerNormSACPolicy.
+
+algo: sac
+id: mt3_wide_ln95
+tasks: mt3
+
+env:
+  max_episode_steps: 200
+  use_one_hot: true
+  vector_strategy: async
+  envs_per_task: 9            # uniform, as in mt3_wide: no task is named in this file
+
+sac:
+  policy: LayerNormSACPolicy
+  learning_rate: 3.0e-4
+  buffer_size: 300000
+  learning_starts: 5000
+  batch_size: 384
+  tau: 1.0e-3
+  gamma: 0.95                 # held at mt3_wide's value on purpose; only the critic changes
+  train_freq: 1
+  gradient_steps: 18          # UTD 0.67 across 27 environments, same as mt3_wide
+  ent_coef: auto
+  target_entropy: auto
+  policy_kwargs:
+    net_arch: [512, 1024, 1024, 512]
+    log_std_init: -3
+
+train:
+  total_steps: 6000000
+  eval_freq: 100000
+  n_eval_episodes: 30
+  checkpoint_freq: 200000
+  patience: 25

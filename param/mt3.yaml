@@ -11,6 +11,7 @@ env:
   max_episode_steps: 200
   use_one_hot: true           # without this the policy cannot tell the tasks apart
   vector_strategy: async
+  envs_per_task: 5            # 15 environments; one per task leaves the critic diverging
 
 sac:
   policy: MlpPolicy
@@ -21,6 +22,10 @@ sac:
   tau: 1.0e-3
   gamma: 0.99
   train_freq: 1
+  # `train_freq` counts env.step() calls, so with 15 environments this is one update per
+  # 15 transitions (UTD 0.067). That is deliberate: it is the ratio the reference MT3 run
+  # used, and it updates far less aggressively than the single-task configs, which is what
+  # lets this one keep gamma 0.99 where push needed 0.95.
   gradient_steps: 1
   ent_coef: auto
   target_entropy: auto
@@ -31,5 +36,7 @@ sac:
 train:
   total_steps: 6000000        # 2 M per task
   eval_freq: 100000
-  n_eval_episodes: 10
+  n_eval_episodes: 30          # 10 puts +-0.15 of noise on a 40 % target; eval is cheap
   checkpoint_freq: 200000     # 0 disables; --resume continues from the latest
+  patience: 25                # stop after 25 evals with no new best. The longest such
+                              # gap in the MT3 run that reached 0.944 mean was 19.
