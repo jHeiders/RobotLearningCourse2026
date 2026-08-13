@@ -219,6 +219,26 @@ def test_value_scale_tracks_each_task_separately():
         env.close()
 
 
+def test_value_scale_survives_a_save_and_load(tmp_path):
+    """A resumed run must keep its normalisation.
+
+    SB3 applies the checkpoint's attributes and then calls _setup_model, so an
+    unconditional assignment there silently resets every scale to 1.0 -- and the run
+    carries on training effectively unnormalised, which is the failure the flag exists
+    to prevent.
+    """
+    model, env = _tiny_model(normalize_critic_loss=True)
+    try:
+        model.learn(total_timesteps=200, progress_bar=False)
+        trained = model.value_scale.clone()
+        assert not th.allclose(trained, th.ones(3)), "nothing to test if it never moved"
+        model.save(tmp_path / "model")
+        restored = MTSAC.load(tmp_path / "model", env=env, device="cpu")
+        assert th.allclose(restored.value_scale.cpu(), trained.cpu())
+    finally:
+        env.close()
+
+
 def test_layernorm_policy_puts_layernorm_in_the_critic_only():
     model, env = _tiny_model(policy=LayerNormSACPolicy)
     try:

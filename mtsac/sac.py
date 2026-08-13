@@ -78,8 +78,9 @@ class MTSAC(SAC):
     Both read the task from the one-hot that ``AppendTaskOneHot`` puts in the last
     ``num_tasks`` observation dimensions, so neither needs a change to the replay buffer.
 
-    The running scales are not checkpointed; a resumed run re-estimates them within a few
-    hundred gradient steps.
+    The running scales are checkpointed and restored, so a resumed run carries on with the
+    normalisation it had rather than re-estimating from 1.0 with the loss unnormalised in
+    the meantime.
     """
 
     def __init__(
@@ -105,7 +106,13 @@ class MTSAC(SAC):
             start = self.log_ent_coef.detach().clone().reshape(1)
             self.log_ent_coef = start.repeat(self.num_tasks).requires_grad_(True)
             self.ent_coef_optimizer = th.optim.Adam([self.log_ent_coef], lr=self.lr_schedule(1))
-        self.value_scale = th.ones(self.num_tasks, device=self.device)
+        # SB3's load() applies the checkpoint's attributes and only then calls
+        # _setup_model, so assigning unconditionally would discard the scales it just
+        # restored and leave a resumed run training unnormalised until they re-converge.
+        if getattr(self, "value_scale", None) is None:
+            self.value_scale = th.ones(self.num_tasks, device=self.device)
+        else:
+            self.value_scale = self.value_scale.to(self.device)
 
     def _task_index(self, observations: th.Tensor) -> th.Tensor:
         """Recover each sample's task from the one-hot block at the end of the observation."""

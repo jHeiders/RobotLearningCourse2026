@@ -1,242 +1,534 @@
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%2345678901234567890123456789012345678901234567890123456789012345678901234567890
-%        1         2         3         4         5         6         7         8
+% 384.195 Robot Learning -- course project report
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-\documentclass[letterpaper, 10 pt, conference]{ieeeconf}  % Comment this line out if you need a4paper
+\documentclass[letterpaper, 10 pt, conference]{ieeeconf}
 
-%\documentclass[a4paper, 10pt, conference]{ieeeconf}      % Use this line for a4 paper
+\IEEEoverridecommandlockouts
+\overrideIEEEmargins
 
-\IEEEoverridecommandlockouts                              % This command is only needed if 
-                                                          % you want to use the \thanks command
-
-\overrideIEEEmargins                                      % Needed to meet printer requirements.
-
-%In case you encounter the following error:
-%Error 1010 The PDF file may be corrupt (unable to open PDF file) OR
-%Error 1000 An error occurred while parsing a contents stream. Unable to analyze the PDF file.
-%This is a known problem with pdfLaTeX conversion filter. The file cannot be opened with acrobat reader
-%Please use one of the alternatives below to circumvent this error by uncommenting one or the other
-%\pdfobjcompresslevel=0
-%\pdfminorversion=4
-
-% See the \addtolength command later in the file to balance the column lengths
-% on the last page of the document
-
-% The following packages can be found on http:\\www.ctan.org
-%\usepackage{graphics} % for pdf, bitmapped graphics files
-%\usepackage{epsfig} % for postscript graphics files
-%\usepackage{mathptmx} % assumes new font selection scheme installed
-%\usepackage{times} % assumes new font selection scheme installed
-%\usepackage{amsmath} % assumes amsmath package installed
-%\usepackage{amssymb}  % assumes amsmath package installed
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{booktabs}
+\usepackage{url}
 
 \title{\LARGE \bf
-Preparation of Papers for IEEE Sponsored Conferences \& Symposia*
+From Single-Task to Multi-Task Soft Actor-Critic on Meta-World:\\
+Diagnosing Why Two MT10 Tasks Never Learn
 }
 
-
-\author{Albert Author$^{1}$ and Bernard D. Researcher$^{2}$% <-this % stops a space
-\thanks{*This work was not supported by any organization}% <-this % stops a space
-\thanks{$^{1}$Albert Author is with Faculty of Electrical Engineering, Mathematics and Computer Science,
-        University of Twente, 7500 AE Enschede, The Netherlands
-        {\tt\small albert.author@papercept.net}}%
-\thanks{$^{2}$Bernard D. Researcheris with the Department of Electrical Engineering, Wright State University,
-        Dayton, OH 45435, USA
-        {\tt\small b.d.researcher@ieee.org}}%
+\author{Johannes Heidersberger$^{1}$ and Hemjyoti Das$^{2}$%
+\thanks{Project report for 384.195 Robot Learning, TU Wien.}%
+\thanks{$^{1}$TU Wien, Vienna, Austria.
+        {\tt\small johannes.heidersberger@tuwien.ac.at}}%
+\thanks{$^{2}$TU Wien, Vienna, Austria.
+        {\tt\small hemjyoti.das@tuwien.ac.at}}%
 }
-
 
 \begin{document}
-
-
 
 \maketitle
 \thispagestyle{empty}
 \pagestyle{empty}
 
-
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 \begin{abstract}
 
-This electronic document is a ÒliveÓ template. The various components of your paper [title, text, heads, etc.] are already defined on the style sheet, as illustrated by the portions given in this document.
+This report documents our course project on multi-task reinforcement learning with Soft
+Actor-Critic (SAC) on the Meta-World benchmark, from single tasks through MT3 to MT10.
+Our baseline multi-task agent learns eight of the ten MT10 tasks and leaves
+\emph{pick-place} and \emph{peg-insert-side} at exactly zero success for as long as we
+train it. Rather than tuning further, we tried to establish why. Measuring the peak
+per-step reward a random policy encounters gives $3.59$ on \emph{reach} but $0.03$ on
+\emph{peg-insert-side} --- a 120-fold spread that matches the order in which the ten tasks
+are learned. Since the solved tasks reach returns near $1{,}800$, the residuals belonging
+to the failing tasks are negligible in the shared squared-error critic loss. Acting on
+this, we normalise the critic loss by a per-task running estimate of return scale, an
+adaptation of PopArt, and combine it with a replay curriculum weighted by measured failure
+rate. Both mechanisms read only statistics the run computes about itself, so no per-task
+constants are involved. Mean success on MT10 rises from $0.79$ to $0.973$ and
+\emph{peg-insert-side} reaches $1.00$, having never succeeded once under the baseline or
+under the curriculum alone. We report an ablation over the two mechanisms, a comparison
+against single-task SAC, and the limitations of a single-seed study.
 
 \end{abstract}
-
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 \section{INTRODUCTION}
 
-This template provides authors with most of the formatting specifications needed for preparing electronic versions of their papers. All standard paper components have been specified for three reasons: (1) ease of use when formatting individual papers, (2) automatic compliance to electronic requirements that facilitate the concurrent or later production of electronic products, and (3) conformity of style throughout a conference proceedings. Margins, column widths, line spacing, and type styles are built-in; examples of the type styles are provided throughout this document and are identified in italic type, within parentheses, following the example. Some components, such as multi-leveled equations, graphics, and tables are not prescribed, although the various table text styles are provided. The formatter will need to create these components, incorporating the applicable criteria that follow.
+Multi-task reinforcement learning asks a single policy to solve several tasks at once.
+Meta-World \cite{yu2020metaworld} is the standard benchmark for this in robot manipulation:
+a Sawyer arm, a shared observation and action space, and task suites of increasing size.
+The natural baseline, and the one this project builds on, is Soft Actor-Critic
+\cite{haarnoja2018sac} trained on all tasks simultaneously with a task one-hot appended to
+the observation and one shared replay buffer --- multi-task SAC (MT-SAC).
 
-\section{PROCEDURE FOR PAPER SUBMISSION}
+MT-SAC has a characteristic failure mode. On MT10 it learns most tasks quickly and
+completely, then stalls: eight tasks reach $1.00$ within roughly 1.5M environment steps,
+and \emph{pick-place} and \emph{peg-insert-side} remain at exactly $0.00$ for as long as
+training continues. They do not learn slowly; they do not learn at all. Their evaluation
+return sits at the reward floor from the first evaluation onwards.
 
-\subsection{Selecting a Template (Heading 2)}
+The intuitive reading is a data-allocation problem --- the hard tasks are a tenth of the
+experience and need a larger share --- and the common remedy is a curriculum that samples
+failing tasks more often. We implemented that remedy, and it was not sufficient. The rest
+of this report is mostly an account of finding out why.
 
-First, confirm that you have the correct template for your paper size. This template has been tailored for output on the US-letter paper size. 
-It may be used for A4 paper size if the paper size setting is suitably modified.
+We set ourselves the constraint that no setting may name an individual task. Hand-allocating
+resources to whichever task is currently failing does work, but it amounts to tuning the
+configuration until the benchmark passes, and it does not carry over to a larger task set.
+We therefore only accepted mechanisms that adapt from quantities the run measures about
+itself while it runs.
 
-\subsection{Maintaining the Integrity of the Specifications}
+Sec.~\ref{sec:diagnosis} reports the diagnosis: what we ruled out, and the measurement that
+identified reward scale as the binding constraint. Sec.~\ref{sec:method} describes the two
+mechanisms we added --- a replay curriculum and a per-task normalisation of the critic loss,
+the latter an adaptation of PopArt \cite{vanhasselt2016popart,hessel2019popart} to a shared
+continuous-control critic. Sec.~\ref{sec:results} gives the MT10 ablation, a comparison
+against single-task SAC, and what the experiments cost us in solved-task stability.
 
-The template is used to format your paper and style the text. All margins, column widths, line spaces, and text fonts are prescribed; please do not alter them. You may note peculiarities. For example, the head margin in this template measures proportionately more than is customary. This measurement and others are deliberate, using specifications that anticipate your paper as one part of the entire proceedings, and not as an independent document. Please do not revise any of the current designations
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{BACKGROUND}
 
-\section{MATH}
+Everything we use is established; this section records where it comes from.
 
-Before you begin to format your paper, first write and save the content as a separate text file. Keep your text and graphic files separate until after the text has been formatted and styled. Do not use hard tabs, and limit use of hard returns to only one return at the end of a paragraph. Do not add any kind of pagination anywhere in the paper. Do not number text heads-the template will do that for you.
+\textbf{Multi-task RL on Meta-World.} Most work on this benchmark targets representation
+sharing: soft modularisation routes a shared network per task \cite{yang2020softmod}, and
+CARE mixes a set of encoders using task metadata \cite{sodhani2021care}. These change what
+the network computes, which is a different question from the one we ended up looking at.
 
-Finally, complete content and organizational editing before formatting. Please take note of the following items when proofreading spelling and grammar:
+\textbf{Value normalisation.} PopArt \cite{vanhasselt2016popart} normalises value targets
+adaptively while preserving the network's outputs, and was applied to multi-task RL
+precisely because tasks differ in reward scale \cite{hessel2019popart}. That work uses
+discrete actions and separate value heads per task. Our setting has one shared
+continuous-control critic whose output SAC's actor consumes directly, so we scale the loss
+rather than the targets; this keeps $Q$ in real units and avoids PopArt's
+output-preservation correction, at the cost of not normalising the targets themselves.
 
-\subsection{Abbreviations and Acronyms} Define abbreviations and acronyms the first time they are used in the text, even after they have been defined in the abstract. Abbreviations such as IEEE, SI, MKS, CGS, sc, dc, and rms do not have to be defined. Do not use abbreviations in the title or heads unless they are unavoidable.
+\textbf{Task curricula.} Weighting task sampling by measured failure rate is a standard
+remedy for imbalanced multi-task training, typically as
+$p_i \propto f_i / \sum_j f_j$ applied to episode collection. We apply the weights to replay
+sampling instead, and add a floor and a cap, for the reasons in Sec.~\ref{sec:curriculum}.
 
-\subsection{Units}
+\textbf{Critic regularisation.} LayerNorm after each hidden critic layer is common to
+several recent value-learning stabilisers \cite{nauman2024bro,lee2025simba,bhatt2024crossq}.
+We use it throughout. It is not something we contribute, but it is what let one
+configuration carry from MT3 to MT10 without retuning.
 
-\begin{itemize}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{PRELIMINARIES AND BASELINE}
 
-\item Use either SI (MKS) or CGS as primary units. (SI units are encouraged.) English units may be used as secondary units (in parentheses). An exception would be the use of English units as identifiers in trade, such as Ò3.5-inch disk driveÓ.
-\item Avoid combining SI and CGS units, such as current in amperes and magnetic field in oersteds. This often leads to confusion because equations do not balance dimensionally. If you must use mixed units, clearly state the units for each quantity that you use in an equation.
-\item Do not mix complete spellings and abbreviations of units: ÒWb/m2Ó or Òwebers per square meterÓ, not Òwebers/m2Ó.  Spell out units when they appear in text: Ò. . . a few henriesÓ, not Ò. . . a few HÓ.
-\item Use a zero before decimal points: Ò0.25Ó, not Ò.25Ó. Use Òcm3Ó, not ÒccÓ. (bullet list)
+We use Meta-World v3 \cite{yu2020metaworld} through Gymnasium, with Stable-Baselines3's SAC
+\cite{raffin2021sb3} as the learner. All $N$ tasks run concurrently in a vectorised
+environment; a $N$-dimensional one-hot identifying the task is appended to each
+observation; and one replay buffer is shared by all of them. Episodes are capped at 200
+steps. Success is Meta-World's binary per-task criterion, evaluated on 30 episodes per task
+every 100k environment steps.
 
-\end{itemize}
+This is MT-SAC with a shared backbone, and it requires no algorithmic change --- the
+one-hot is sufficient for the policy and critic to condition on task identity. Every method
+in this report is an addition to this baseline, switchable independently.
 
+Two settings deserve comment because they shaped everything downstream. We use
+$\gamma = 0.95$ rather than the more common $0.99$: with a per-step reward bounded by 10, the
+value of a solved task is bounded by $10/(1-\gamma)$, which is $200$ at $0.95$ but $1{,}000$
+at $0.99$, and the larger ceiling made the critic unstable in early runs. And we use many
+parallel environments per task at a fixed update-to-data ratio of $0.67$; a single
+environment per task diverged reproducibly (Table~\ref{tab:single}).
 
-\subsection{Equations}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{DIAGNOSIS}
+\label{sec:diagnosis}
 
-The equations are an exception to the prescribed specifications of this template. You will need to determine whether or not your equation should be typed using either the Times New Roman or the Symbol font (please no other font). To create multileveled equations, it may be necessary to treat the equation as a graphic and insert it into the text after your paper is styled. Number equations consecutively. Equation numbers, within parentheses, are to position flush right, as in (1), using a right tab stop. To make your equations more compact, you may use the solidus ( / ), the exp function, or appropriate exponents. Italicize Roman symbols for quantities and variables, but not Greek symbols. Use a long dash rather than a hyphen for a minus sign. Punctuate equations with commas or periods when they are part of a sentence, as in
+\subsection{MT3: capacity, not allocation}
 
-$$
-\alpha + \beta = \chi \eqno{(1)}
-$$
+We first studied the failure on MT3 (\emph{reach}, \emph{push}, \emph{pick-place}), where
+runs are cheap. Table~\ref{tab:mt3} gives three configurations. The reference
+hyperparameters leave \emph{pick-place} at $0.00$ after 6M steps. Hand-allocating
+environments towards it ($2/4/9$ instead of $5/5/5$) fixes it, reaching $0.93$ --- which is
+what suggests an allocation problem in the first place.
 
-Note that the equation is centered using a center tab stop. Be sure that the symbols in your equation have been defined before or immediately following the equation. Use Ò(1)Ó, not ÒEq. (1)Ó or Òequation (1)Ó, except at the beginning of a sentence: ÒEquation (1) is . . .Ó
-
-\subsection{Some Common Mistakes}
-\begin{itemize}
-
-
-\item The word ÒdataÓ is plural, not singular.
-\item The subscript for the permeability of vacuum ?0, and other common scientific constants, is zero with subscript formatting, not a lowercase letter ÒoÓ.
-\item In American English, commas, semi-/colons, periods, question and exclamation marks are located within quotation marks only when a complete thought or name is cited, such as a title or full quotation. When quotation marks are used, instead of a bold or italic typeface, to highlight a word or phrase, punctuation should appear outside of the quotation marks. A parenthetical phrase or statement at the end of a sentence is punctuated outside of the closing parenthesis (like this). (A parenthetical sentence is punctuated within the parentheses.)
-\item A graph within a graph is an ÒinsetÓ, not an ÒinsertÓ. The word alternatively is preferred to the word ÒalternatelyÓ (unless you really mean something that alternates).
-\item Do not use the word ÒessentiallyÓ to mean ÒapproximatelyÓ or ÒeffectivelyÓ.
-\item In your paper title, if the words Òthat usesÓ can accurately replace the word ÒusingÓ, capitalize the ÒuÓ; if not, keep using lower-cased.
-\item Be aware of the different meanings of the homophones ÒaffectÓ and ÒeffectÓ, ÒcomplementÓ and ÒcomplimentÓ, ÒdiscreetÓ and ÒdiscreteÓ, ÒprincipalÓ and ÒprincipleÓ.
-\item Do not confuse ÒimplyÓ and ÒinferÓ.
-\item The prefix ÒnonÓ is not a word; it should be joined to the word it modifies, usually without a hyphen.
-\item There is no period after the ÒetÓ in the Latin abbreviation Òet al.Ó.
-\item The abbreviation Òi.e.Ó means Òthat isÓ, and the abbreviation Òe.g.Ó means Òfor exampleÓ.
-
-\end{itemize}
-
-
-\section{USING THE TEMPLATE}
-
-Use this sample document as your LaTeX source file to create your document. Save this file as {\bf root.tex}. You have to make sure to use the cls file that came with this distribution. If you use a different style file, you cannot expect to get required margins. Note also that when you are creating your out PDF file, the source file is only part of the equation. {\it Your \TeX\ $\rightarrow$ PDF filter determines the output file size. Even if you make all the specifications to output a letter file in the source - if your filter is set to produce A4, you will only get A4 output. }
-
-It is impossible to account for all possible situation, one would encounter using \TeX. If you are using multiple \TeX\ files you must make sure that the ``MAIN`` source file is called root.tex - this is particularly important if your conference is using PaperPlaza's built in \TeX\ to PDF conversion tool.
-
-\subsection{Headings, etc}
-
-Text heads organize the topics on a relational, hierarchical basis. For example, the paper title is the primary text head because all subsequent material relates and elaborates on this one topic. If there are two or more sub-topics, the next level head (uppercase Roman numerals) should be used and, conversely, if there are not at least two sub-topics, then no subheads should be introduced. Styles named ÒHeading 1Ó, ÒHeading 2Ó, ÒHeading 3Ó, and ÒHeading 4Ó are prescribed.
-
-\subsection{Figures and Tables}
-
-Positioning Figures and Tables: Place figures and tables at the top and bottom of columns. Avoid placing them in the middle of columns. Large figures and tables may span across both columns. Figure captions should be below the figures; table heads should appear above the tables. Insert figures and tables after they are cited in the text. Use the abbreviation ÒFig. 1Ó, even at the beginning of a sentence.
+The third row is the one that matters. Restoring a \emph{uniform} split while scaling the
+learner's capacity --- more parallel environments, a larger replay buffer, a larger batch,
+and a proportionally larger number of gradient steps --- solves all three tasks completely.
+The hand-tuned allocation was not merely unnecessary; it was slightly worse than not
+tuning at all.
 
 \begin{table}[h]
-\caption{An Example of a Table}
-\label{table_example}
+\caption{MT3 after 6M environment steps. Final evaluation, 30 episodes per task.}
+\label{tab:mt3}
 \begin{center}
-\begin{tabular}{|c||c|}
-\hline
-One & Two\\
-\hline
-Three & Four\\
-\hline
+\small
+\begin{tabular}{lccccc}
+\toprule
+configuration & envs & buffer & batch & pick-place & mean \\
+\midrule
+reference hparams   & 5/5/5 & 300k & 128 & 0.00 & 0.60 \\
+hand allocation     & 2/4/9 & 300k & 256 & 0.93 & 0.967 \\
+uniform, scaled     & 9/9/9 & 1M   & 384 & \textbf{1.00} & \textbf{1.00} \\
+\bottomrule
 \end{tabular}
 \end{center}
 \end{table}
 
+We carried the third configuration to MT10 unchanged except for the four quantities that
+are functions of task count. It solved eight of ten tasks and reproduced the stall exactly.
+Allocation was therefore not the MT3 bottleneck, and the MT10 stall needed a different
+explanation.
 
-   \begin{figure}[thpb]
-      \centering
-      \framebox{\parbox{3in}{We suggest that you use a text box to insert a graphic (which is ideally a 300 dpi TIFF or EPS file, with all fonts embedded) because, in an document, this method is somewhat more stable than directly inserting a picture.
-}}
-      %\includegraphics[scale=1.0]{figurefile}
-      \caption{Inductance of oscillation winding on amorphous
-       magnetic core versus DC bias magnetic field}
-      \label{figurelabel}
-   \end{figure}
-   
+\subsection{What we ruled out}
 
-Figure Labels: Use 8 point Times New Roman for Figure labels. Use words rather than symbols or abbreviations when writing Figure axis labels to avoid confusing the reader. As an example, write the quantity ÒMagnetizationÓ, or ÒMagnetization, MÓ, not just ÒMÓ. If including units in the label, present them within parentheses. Do not label axes only with units. In the example, write ÒMagnetization (A/m)Ó or ÒMagnetization {A[m(1)]}Ó, not just ÒA/mÓ. Do not label axes with a ratio of quantities and units. For example, write ÒTemperature (K)Ó, not ÒTemperature/K.Ó
+Three explanations are available and all three are wrong, which we established by probing
+the saved MT10 policy on CPU rather than by launching further training runs.
 
+\emph{Exploration collapse.} If the failing tasks had lost their exploration noise they
+could not discover the sparse success condition. Measured per-task action standard
+deviation contradicts this in the strongest possible way: \emph{peg-insert-side} is the
+\emph{noisiest} task in the run at $0.877$, and \emph{pick-place} second at $0.531$,
+against $0.272$ for the fully solved \emph{reach}. The failing tasks are not short of
+exploration. This also predicts that a per-task entropy coefficient --- the standard
+remedy, and the one prior course work applies --- would push where the agent is already
+saturated, and we accordingly did not adopt it.
+
+\emph{Insufficient retention.} The shared buffer holds 3.3M transitions across ten tasks,
+i.e.\ 330k per task under a uniform split, matching the retention that solved
+\emph{pick-place} on MT3. Retention was already correct.
+
+\emph{The episode cap.} Using Meta-World's scripted expert policies we measured
+steps-to-success at a 500-step horizon: \emph{peg-insert-side} is solved in a median of 93
+steps, and 17 of 20 attempts finish within our 200-step cap. The cap imposes a ceiling of
+roughly 85\% on that task, but cannot explain a floor of zero.
+
+\subsection{What the measurement showed}
+
+The decisive quantity is how much reward is reachable \emph{before} a task is learned. We
+rolled out a random policy on each task and recorded the peak per-step reward it
+encountered:
+
+\begin{center}
+\small
+\begin{tabular}{lcccc}
+\toprule
+ & reach & push & pick-place & peg-insert-side \\
+\midrule
+peak reward & 3.59 & 0.54 & 0.08 & 0.03 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+This is a 120-fold spread, and it reproduces the exact order in which the ten tasks were
+learned. Its consequence for a shared critic is arithmetic. Once the easy tasks are solved
+their evaluation returns range from $1{,}081$ to $1{,}867$, while an unlearned
+\emph{peg-insert-side} episode returns under $70$. The critic is fitted by minimising
+squared error across a batch containing all tasks, so residuals enter the gradient in
+proportion to the square of their magnitude: a two-order-of-magnitude gap in return scale
+is a four-order-of-magnitude gap in gradient contribution. The signal belonging to
+\emph{peg-insert-side} is not merely smaller than the others; it is negligible against
+them. The critic reduces its loss most efficiently by ignoring the task, and the actor,
+which follows $Q$, ignores it in turn.
+
+This reframes the problem. A curriculum controls \emph{how often} a task is sampled. It
+cannot make what that task shows the critic register. The two are orthogonal, and for
+\emph{peg-insert-side} the second is the binding constraint.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{METHOD}
+\label{sec:method}
+
+\subsection{Per-task critic-loss normalisation}
+
+We maintain, for each task $i$, an exponential moving estimate $\sigma_i$ of the standard
+deviation of that task's TD targets, updated from each batch with momentum
+$\alpha = 10^{-3}$:
+%
+$$
+\sigma_i \leftarrow (1-\alpha)\,\sigma_i + \alpha \cdot \mathrm{std}\!\left(\{y_k : \tau_k = i\}\right)
+\eqno{(1)}
+$$
+%
+where $y_k$ is the target for sample $k$ and $\tau_k$ its task, recovered from the one-hot
+block of the observation. The critic loss divides each sample's residual by its own task's
+scale:
+%
+$$
+\mathcal{L} = \tfrac{1}{2}\sum_{j}\; \mathbb{E}_k
+\left[ \left( \frac{Q_j(s_k,a_k) - y_k}{\max(\sigma_{\tau_k},\,\sigma_{\min})} \right)^{\!2} \right]
+\eqno{(2)}
+$$
+%
+with $\sigma_{\min} = 10^{-2}$ guarding against a task whose targets are momentarily
+constant. Every task now contributes comparably to the loss regardless of its reward
+magnitude.
+
+Two properties matter. First, we scale the \emph{loss}, not the targets: $Q$ stays in real
+units, so the actor objective, the target computation and every logged value are unchanged,
+and none of PopArt's output-preservation correction is required. Second, $\sigma_i$ is
+estimated from the run's own TD targets. It is not a constant, not a per-task setting, and
+not read from a previous run.
+
+\subsection{Failure-rate replay curriculum}
+\label{sec:curriculum}
+
+Let $\bar{s}_i$ be task $i$'s mean success over the last $M = 3$ evaluations. We weight
+replay sampling by
+%
+$$
+w_i \;\propto\; \mathrm{clip}\left(1 - \bar{s}_i,\; \ell,\; c\right),
+\qquad \ell = 0.1,\; c = 0.6
+\eqno{(3)}
+$$
+%
+normalised over tasks and applied as a per-environment sampling probability inside the
+replay buffer. Task-to-environment assignment is fixed at construction, so this costs one
+weighted draw per batch and no per-transition bookkeeping.
+
+Three choices distinguish this from the usual formulation. It acts on \textbf{replay rather
+than collection}, because collection share and optimisation share are separable and only
+the latter binds: under a uniform split MT10 already collects far more
+\emph{pick-place} transitions than the amount that solved it standalone. The \textbf{floor}
+$\ell$ prevents a solved task's share from going to zero, which is forgetting; the
+\textbf{cap} $c$ prevents a task that cannot yet be learned from absorbing the entire
+budget, which is the failure mode that a bare $f_i / \sum_j f_j$ rule exhibits at ten tasks
+where two are stuck at zero. With eight tasks solved and two at zero, (3) gives each failing
+task 115 of every 384 samples and each solved task 19.
+
+\subsection{Absence of per-task constants}
+
+No file in this work names a task. The curriculum reads evaluation success, which the run
+measures; the normalisation reads TD-target dispersion, which the run computes. The only
+hand-chosen constants --- $\ell$, $c$, $\alpha$, $\sigma_{\min}$, and the number of
+environments --- are global and shared by every task. Four further settings (buffer size,
+batch size, gradient steps, total steps) are functions of the number of tasks and follow by
+arithmetic. Applying the same configuration to a larger suite such as MT30 would therefore
+need no further search, though we had neither the compute nor the time to verify that, and
+MT50 was out of reach on our hardware.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{EXPERIMENTAL SETUP}
+
+All runs use Meta-World 3.1.1, Gymnasium 1.3.0, Stable-Baselines3 2.9.0 and PyTorch 2.13 on
+a single NVIDIA T1000 (8\,GB) with 20 CPU cores. Networks are $[512, 1024, 1024, 512]$ for
+both actor and critic, with LayerNorm after each hidden critic layer. Learning rate
+$3\times10^{-4}$, $\tau = 10^{-3}$, $\gamma = 0.95$, automatic entropy tuning,
+$\log\sigma_{\text{init}} = -3$.
+
+MT10 uses 9 environments per task (90 total), a 3.3M-transition buffer, batch 384, and 60
+gradient steps per collection round, which is an update-to-data ratio of $0.67$ --- the same
+ratio used on MT3. Evaluation is 30 episodes per task every 100k steps. All three MT10 arms
+share this configuration exactly; they differ only in which of the two mechanisms is
+enabled.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\columnwidth]{fig/mt10_ablation.pdf}
+  \caption{MT10 ablation. Top: mean success over all ten tasks. Middle and bottom: the two
+  tasks the uniform baseline never learns. The curriculum arm was warm-started from the
+  uniform run's 2.2M-step checkpoint and is plotted from there. The curriculum moves
+  \emph{pick-place} off zero but does not consolidate it, and leaves
+  \emph{peg-insert-side} unchanged; adding normalisation lifts both.}
+  \label{fig:ablation}
+\end{figure}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{RESULTS}
+\label{sec:results}
+
+\subsection{MT10 ablation}
+
+Fig.~\ref{fig:ablation} and Table~\ref{tab:mt10} give the three arms. The uniform baseline
+plateaus at $0.79$ from 1.4M steps onward with both hard tasks at exactly $0.00$. Adding
+the curriculum raises \emph{pick-place} above zero for the first time --- $0.03$, $0.07$,
+$0.17$ across successive evaluations --- but it never consolidates, and
+\emph{peg-insert-side} does not move at all. This is what convinced us the allocation
+reading was wrong: the curriculum verifiably tripled the failing tasks' share of every
+gradient step, and it was still not enough.
+
+Adding normalisation changes the outcome. \emph{Peg-insert-side} records its first non-zero
+evaluation at 2.7M steps, passes $0.5$ at 3.3M, and reaches $1.00$ --- all 30 evaluation
+episodes --- at 5.6M. \emph{Pick-place} follows the same trajectory roughly 800k steps
+behind. At 5.9M steps the run reaches a mean success of $0.973$ with nine tasks at or above
+$0.9$, and it is the first run in this project in which all ten tasks produce successful
+evaluation episodes.
+
+\begin{table}[h]
+\caption{MT10 arms. Values are the final evaluation of each arm; the 2.2M column is the
+matched step at which the uniform baseline had already plateaued.}
+\label{tab:mt10}
+\begin{center}
+\small
+\begin{tabular}{lccccc}
+\toprule
+ & \multicolumn{2}{c}{at 2.2M} & \multicolumn{3}{c}{final} \\
+\cmidrule(lr){2-3}\cmidrule(lr){4-6}
+arm & mean & solved & pick-pl. & peg-ins. & mean \\
+\midrule
+uniform                    & 0.793 & 8 & 0.00 & 0.00 & 0.793 \\
++ curriculum$^{\dagger}$   & 0.783 & 7 & 0.00 & 0.00 & 0.800 \\
++ curr. + normalisation    & 0.777 & 7 & \textbf{0.77} & \textbf{1.00} & \textbf{0.973} \\
+\bottomrule
+\end{tabular}
+\end{center}
+\footnotesize $^{\dagger}$warm-started from the uniform arm's 2.2M checkpoint; final at
+3.4M. The uniform arm was stopped at 2.2M, its mean having been flat since 1.4M.
+\end{table}
+
+Two observations qualify the result. First, normalisation gives no early advantage: at 2.2M
+the normalised arm is marginally \emph{behind} the baseline ($0.777$ against $0.793$). The
+mechanism does not accelerate tasks that are already learnable; it makes tasks learnable
+that otherwise never become so, and that shows up only after 2.5M steps.
+
+Second, there is a cost. \emph{Push} --- solved and stable at $1.00$ in the baseline ---
+becomes noisy under the curriculum, oscillating between $0.80$ and $1.00$, because the floor
+$\ell = 0.1$ deliberately reduces a solved task's replay share to 19 samples per batch. The
+mean is nonetheless far higher, so the trade is favourable, but it identifies $\ell$ as the
+parameter to raise if a solved task were to degrade further.
+
+\subsection{The mechanism is visible in the statistics}
+
+Fig.~\ref{fig:scale} plots the learned per-task value scales $\sigma_i$. They span
+$15$ to $89$ at convergence --- a factor of six between the extremes among solved tasks, and
+far more early in training. \emph{Peg-insert-side} begins near $0.04$ and rises to $6.7$ as
+the task starts to be learned, then to the range of the others. This is a direct measurement
+of the imbalance the method corrects: without (2), a residual on the $\sigma \approx 0.04$
+task is weighted identically to one on the $\sigma \approx 89$ task, and contributes
+$(89/0.04)^2 \approx 5\times10^{6}$ times less to the gradient.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\columnwidth]{fig/value_scale.pdf}
+  \caption{Per-task value scale $\sigma_i$ during the normalised MT10 run (log axis). The
+  two tasks that the baseline never learns start orders of magnitude below the rest and rise
+  as they become learnable.}
+  \label{fig:scale}
+\end{figure}
+
+\subsection{Transfer relative to single-task training}
+
+Table~\ref{tab:single} compares the multi-task result against SAC trained on each task
+alone for 2M steps; both columns report the final evaluation. The multi-task agent is
+within noise of the single-task baselines on every task we measured separately, despite
+dividing its capacity ten ways --- and solves \emph{peg-insert-side}, which we never
+trained standalone, at $1.00$. Sharing a critic across ten tasks therefore costs nothing
+measurable here once the scale imbalance is corrected.
+
+The failed row is included because it motivates the configuration: with one environment per
+task and $\gamma = 0.99$, \emph{push} collapses to $0.00$ and stays there. The number of
+parallel environments and the discount are not incidental choices.
+
+\begin{table}[h]
+\caption{Single-task SAC (2M steps each) against the multi-task agent.}
+\label{tab:single}
+\begin{center}
+\small
+\begin{tabular}{lcc}
+\toprule
+task & single-task & MT10 (ours) \\
+\midrule
+reach            & 1.00 & 1.00 \\
+push             & 0.93 & 0.97 \\
+pick-place       & 0.80 & 0.77 \\
+peg-insert-side  & --   & \textbf{1.00} \\
+\midrule
+push, 1 env, $\gamma=0.99$ & 0.00 & --- \\
+\bottomrule
+\end{tabular}
+\end{center}
+\end{table}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{DISCUSSION AND LIMITATIONS}
+
+\textbf{Single seed.} Every number reported here comes from one seed per configuration.
+The compute available (one T1000; an MT10 run takes roughly 32 hours for 6M steps) did not
+permit seed replication alongside the ablation. The central claim is robust to this in one
+respect --- a task moving from exactly $0.00$ across 23 consecutive evaluations to $1.00$ on
+30 episodes is not seed noise --- but the mean-success differences between arms should be
+read as indicative rather than significant.
+
+\textbf{Unequal arm lengths.} The curriculum-only arm was warm-started from the uniform
+arm's checkpoint and run for 1.2M further steps rather than trained from scratch, which
+makes it a probe rather than a matched arm. It is reported as such. The uniform and
+normalised arms are both from scratch and are directly comparable.
+
+\textbf{The episode cap bounds \emph{peg-insert-side}.} Our scripted-expert measurement
+implies a ceiling near 85\% at 200 steps, yet the learned policy reaches $1.00$. The learned
+solution is therefore faster than Meta-World's reference controller on this task, which we
+did not anticipate and did not optimise for.
+
+\textbf{What we did not test.} A per-task entropy coefficient was implemented and left
+disabled, on the measurement that the failing tasks were already the noisiest in the run.
+Testing it as a fourth arm would strengthen the comparison against prior work. We also did
+not isolate normalisation \emph{without} the curriculum on MT10; the diagnosis predicts it
+would recover most of the gain, and that is the single most informative missing experiment.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 \section{CONCLUSIONS}
 
-A conclusion section is not required. Although a conclusion may review the main points of the paper, do not replicate the abstract as the conclusion. A conclusion might elaborate on the importance of the work or suggest applications and extensions. 
+We set out to scale SAC from single Meta-World tasks to MT10, and spent most of the project
+on the two tasks that would not learn. The useful lesson for us was that the obvious
+explanation --- too little data --- was testable and false, and that a cheap measurement on
+CPU (the reward a random policy can reach on each task) identified the actual constraint
+after two full training runs had failed to fix it. Correcting the critic loss for per-task
+return scale, together with a replay curriculum, took MT10 mean success from $0.79$ to
+$0.973$ and solved \emph{peg-insert-side}, which had never once succeeded beforehand.
 
-\addtolength{\textheight}{-12cm}   % This command serves to balance the column lengths
-                                  % on the last page of the document manually. It shortens
-                                  % the textheight of the last page by a suitable amount.
-                                  % This command does not take effect until the next page
-                                  % so it should come on the page before the last. Make
-                                  % sure that you do not shorten the textheight too much.
+Neither mechanism is new in itself; the normalisation is an adaptation of PopArt and the
+curriculum is a standard failure-rate rule with a floor and a cap. What we would keep from
+this project is the working habit: when a run stalls, measure the quantity the algorithm
+actually depends on before changing hyperparameters. The main caveat is that all of our
+numbers come from a single seed, and the missing experiment we would run next is
+normalisation without the curriculum, to see how much of the gain the curriculum
+contributes at all.
 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
-
-
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
-
-
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-\section*{APPENDIX}
-
-Appendixes should appear before the acknowledgment.
-
-\section*{ACKNOWLEDGMENT}
-
-The preferred spelling of the word ÒacknowledgmentÓ in America is without an ÒeÓ after the ÒgÓ. Avoid the stilted expression, ÒOne of us (R. B. G.) thanks . . .Ó  Instead, try ÒR. B. G. thanksÓ. Put sponsor acknowledgments in the unnumbered footnote on the first page.
-
-
+\addtolength{\textheight}{-3cm}
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
-References are important to the reader; therefore, each citation must be complete and correct. If at all possible, references should be commonly available publications.
-
-
-
 \begin{thebibliography}{99}
 
-\bibitem{c1} G. O. Young, ÒSynthetic structure of industrial plastics (Book style with paper title and editor),Ó 	in Plastics, 2nd ed. vol. 3, J. Peters, Ed.  New York: McGraw-Hill, 1964, pp. 15Ð64.
-\bibitem{c2} W.-K. Chen, Linear Networks and Systems (Book style).	Belmont, CA: Wadsworth, 1993, pp. 123Ð135.
-\bibitem{c3} H. Poor, An Introduction to Signal Detection and Estimation.   New York: Springer-Verlag, 1985, ch. 4.
-\bibitem{c4} B. Smith, ÒAn approach to graphs of linear forms (Unpublished work style),Ó unpublished.
-\bibitem{c5} E. H. Miller, ÒA note on reflector arrays (Periodical styleÑAccepted for publication),Ó IEEE Trans. Antennas Propagat., to be publised.
-\bibitem{c6} J. Wang, ÒFundamentals of erbium-doped fiber amplifiers arrays (Periodical styleÑSubmitted for publication),Ó IEEE J. Quantum Electron., submitted for publication.
-\bibitem{c7} C. J. Kaufman, Rocky Mountain Research Lab., Boulder, CO, private communication, May 1995.
-\bibitem{c8} Y. Yorozu, M. Hirano, K. Oka, and Y. Tagawa, ÒElectron spectroscopy studies on magneto-optical media and plastic substrate interfaces(Translation Journals style),Ó IEEE Transl. J. Magn.Jpn., vol. 2, Aug. 1987, pp. 740Ð741 [Dig. 9th Annu. Conf. Magnetics Japan, 1982, p. 301].
-\bibitem{c9} M. Young, The Techincal Writers Handbook.  Mill Valley, CA: University Science, 1989.
-\bibitem{c10} J. U. Duncombe, ÒInfrared navigationÑPart I: An assessment of feasibility (Periodical style),Ó IEEE Trans. Electron Devices, vol. ED-11, pp. 34Ð39, Jan. 1959.
-\bibitem{c11} S. Chen, B. Mulgrew, and P. M. Grant, ÒA clustering technique for digital communications channel equalization using radial basis function networks,Ó IEEE Trans. Neural Networks, vol. 4, pp. 570Ð578, July 1993.
-\bibitem{c12} R. W. Lucky, ÒAutomatic equalization for digital communication,Ó Bell Syst. Tech. J., vol. 44, no. 4, pp. 547Ð588, Apr. 1965.
-\bibitem{c13} S. P. Bingulac, ÒOn the compatibility of adaptive controllers (Published Conference Proceedings style),Ó in Proc. 4th Annu. Allerton Conf. Circuits and Systems Theory, New York, 1994, pp. 8Ð16.
-\bibitem{c14} G. R. Faulhaber, ÒDesign of service systems with priority reservation,Ó in Conf. Rec. 1995 IEEE Int. Conf. Communications, pp. 3Ð8.
-\bibitem{c15} W. D. Doyle, ÒMagnetization reversal in films with biaxial anisotropy,Ó in 1987 Proc. INTERMAG Conf., pp. 2.2-1Ð2.2-6.
-\bibitem{c16} G. W. Juette and L. E. Zeffanella, ÒRadio noise currents n short sections on bundle conductors (Presented Conference Paper style),Ó presented at the IEEE Summer power Meeting, Dallas, TX, June 22Ð27, 1990, Paper 90 SM 690-0 PWRS.
-\bibitem{c17} J. G. Kreifeldt, ÒAn analysis of surface-detected EMG as an amplitude-modulated noise,Ó presented at the 1989 Int. Conf. Medicine and Biological Engineering, Chicago, IL.
-\bibitem{c18} J. Williams, ÒNarrow-band analyzer (Thesis or Dissertation style),Ó Ph.D. dissertation, Dept. Elect. Eng., Harvard Univ., Cambridge, MA, 1993. 
-\bibitem{c19} N. Kawasaki, ÒParametric study of thermal and chemical nonequilibrium nozzle flow,Ó M.S. thesis, Dept. Electron. Eng., Osaka Univ., Osaka, Japan, 1993.
-\bibitem{c20} J. P. Wilkinson, ÒNonlinear resonant circuit devices (Patent style),Ó U.S. Patent 3 624 12, July 16, 1990. 
+\bibitem{yu2020metaworld} T. Yu, D. Quillen, Z. He, R. Julian, K. Hausman, C. Finn, and
+S. Levine, ``Meta-World: A benchmark and evaluation for multi-task and meta reinforcement
+learning,'' in \emph{Conf. on Robot Learning (CoRL)}, 2019.
 
+\bibitem{haarnoja2018sac} T. Haarnoja, A. Zhou, P. Abbeel, and S. Levine, ``Soft
+actor-critic: Off-policy maximum entropy deep reinforcement learning with a stochastic
+actor,'' in \emph{Int. Conf. on Machine Learning (ICML)}, 2018.
 
+\bibitem{vanhasselt2016popart} H. van Hasselt, A. Guez, M. Hessel, V. Mnih, and D. Silver,
+``Learning values across many orders of magnitude,'' in \emph{Advances in Neural
+Information Processing Systems (NeurIPS)}, 2016.
 
+\bibitem{hessel2019popart} M. Hessel, H. Soyer, L. Espeholt, W. Czarnecki, S. Schmitt, and
+H. van Hasselt, ``Multi-task deep reinforcement learning with PopArt,'' in \emph{AAAI Conf.
+on Artificial Intelligence}, 2019.
 
+\bibitem{yang2020softmod} R. Yang, H. Xu, Y. Wu, and X. Wang, ``Multi-task reinforcement
+learning with soft modularization,'' in \emph{Advances in Neural Information Processing
+Systems (NeurIPS)}, 2020.
 
+\bibitem{sodhani2021care} S. Sodhani, A. Zhang, and J. Pineau, ``Multi-task reinforcement
+learning with context-based representations,'' in \emph{Int. Conf. on Machine Learning
+(ICML)}, 2021.
+
+\bibitem{raffin2021sb3} A. Raffin, A. Hill, A. Gleave, A. Kanervisto, M. Ernestus, and
+N. Dormann, ``Stable-Baselines3: Reliable reinforcement learning implementations,''
+\emph{Journal of Machine Learning Research}, vol. 22, no. 268, pp. 1--8, 2021.
+
+\bibitem{nauman2024bro} M. Nauman, M. Ostaszewski, K. Jankowski, P. Mi{\l}o{\'s}, and
+M. Cygan, ``Bigger, regularized, optimistic: Scaling for compute and sample-efficient
+continuous control,'' in \emph{Advances in Neural Information Processing Systems
+(NeurIPS)}, 2024.
+
+\bibitem{lee2025simba} H. Lee, D. Hwang, D. Kim, H. Kim, J. J. Tai, K. Subramanian,
+P. R. Wurman, J. Choo, P. Stone, and T. Seno, ``SimBa: Simplicity bias for scaling up
+parameters in deep reinforcement learning,'' in \emph{Int. Conf. on Learning
+Representations (ICLR)}, 2025.
+
+\bibitem{bhatt2024crossq} A. Bhatt, D. Palenicek, B. Belousov, M. Argus, A. Amiranashvili,
+T. Brox, and J. Peters, ``CrossQ: Batch normalization in deep reinforcement learning for
+greater sample efficiency and simplicity,'' in \emph{Int. Conf. on Learning Representations
+(ICLR)}, 2024.
 
 \end{thebibliography}
-
-
-
 
 \end{document}

@@ -78,6 +78,13 @@ def main(argv: list[str] | None = None) -> None:
     if args.wandb:
         import wandb
 
+        # A resumed run has to land back in the same W&B run. Without the id, wandb.init
+        # opens a second one that starts mid-training, and the dashboard shows the
+        # continuation as a separate curve rather than one. The id is stored on the first
+        # call, so --resume needs no extra flag.
+        id_file = run_dir / "wandb_id.txt"
+        wandb_id = id_file.read_text().strip() if args.resume and id_file.exists() else None
+
         # Seeds of one config collapse into a group, so the dashboard stays readable.
         wandb_run = wandb.init(
             project=WANDB_PROJECT,
@@ -87,7 +94,10 @@ def main(argv: list[str] | None = None) -> None:
             tags=[cfg["algo"], cfg["id"], f"seed{args.seed}"],
             config=cfg,
             sync_tensorboard=True,
+            id=wandb_id,
+            resume="must" if wandb_id else None,
         )
+        id_file.write_text(wandb_run.id)
 
     ckpt_dir = run_dir / "checkpoint"
     already_done = 0

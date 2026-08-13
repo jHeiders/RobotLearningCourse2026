@@ -1,0 +1,84 @@
+# param/mt10_curr.yaml plus a normalised critic loss. One change, and like every other
+# setting in this file it names no task and is decided by the run itself while it runs.
+#
+# Where this comes from. param/mt10.yaml solved eight of ten tasks and left pick-place and
+# peg-insert-side at 0.00. param/mt10_curr.yaml added the replay curriculum, which raised
+# pick-place's share from 38 to 115 samples per gradient step and moved it off zero for the
+# first time (0.03, 0.07, 0.17), but never made it stick, and did nothing at all for
+# peg-insert-side. A CPU probe of the scripted experts then measured why -- the peak reward
+# a *random* policy can find, per step:
+#
+#     reach 3.59    push 0.54    pick-place 0.08    peg-insert-side 0.03
+#
+# which is the exact order the ten tasks learned in. The critic is shared and is being
+# fitted to solved tasks whose returns are around 1800; peg-insert-side's entire reachable
+# signal is 0.03 per step. It is not small, it is invisible, and the critic drives its own
+# error to nothing by ignoring the task -- which is what the policy does. The same probe
+# ruled out the episode cap: the scripted expert solves peg-insert-side in a median of 93
+# steps, 17 of 20 within the 200-step limit.
+#
+# So the curriculum was necessary but not sufficient. It sets how *often* a task is
+# sampled; it cannot make what that task shows the critic register. This config keeps it
+# and adds the other two halves.
+#
+#   normalize_critic_loss   Divides each sample's critic error by a running estimate of its
+#                           own task's return scale, so a 0.03-scale task competes on equal
+#                           terms with an 1800-scale one. Q stays in real units -- the loss
+#                           is scaled, not the targets -- so the actor and every logged
+#                           number are unchanged. This was refuted on MT3, where the
+#                           binding constraint turned out to be buffer retention and the
+#                           scale gap was 45-fold; here retention is already right, the
+#                           sampling share is already fixed, and the gap is 120-fold.
+#
+# Rejected: splitting collection per task. The curriculum can only reweight transitions
+# that were already collected, and peg-insert-side collects a tenth of the episodes, so
+# giving it more environments looks tempting. Two reasons not to. It cannot be done from
+# inside a run -- the environment-to-task mapping is fixed when the replay buffer is built
+# -- so the numbers would have to come from a previous run's results, and a setting found
+# by running experiments until it worked is not an automatic method however it is derived.
+# And the measurement says it would not help anyway: peg-insert-side's problem is that a
+# 0.03-per-step signal is invisible next to an 1800-scale one, so three times the episodes
+# is three times as much invisible signal. Collection stays uniform.
+#
+# Everything else is param/mt10_curr.yaml unchanged. per_task_alpha stays off: the failing tasks
+# were measured to have the *highest* action noise in the run (0.88 and 0.53, against 0.27
+# for solved reach), so they are not short of exploration and a per-task entropy
+# coefficient would push where they are already saturated.
+
+algo: mtsac
+id: mt10_norm_curr
+tasks: mt10
+
+env:
+  max_episode_steps: 200
+  use_one_hot: true           # the task id the normalisation reads back out
+  vector_strategy: async
+  envs_per_task: 9            # uniform: no task is named in this file
+
+sac:
+  policy: LayerNormSACPolicy
+  learning_rate: 3.0e-4
+  buffer_size: 3300000        # 330k retained per task, matching mt3_uniform
+  learning_starts: 5000
+  batch_size: 384
+  tau: 1.0e-3
+  gamma: 0.95
+  train_freq: 1
+  gradient_steps: 60          # 0.67 gradient steps per collected transition, as on MT3
+  ent_coef: auto
+  target_entropy: auto
+  normalize_critic_loss: true
+  replay_buffer_class: TaskWeightedReplayBuffer
+  replay_buffer_kwargs:
+    floor: 0.1                # a solved task keeps a share, so it is not forgotten
+    cap: 0.6                  # a stuck task cannot take the whole budget
+  policy_kwargs:
+    net_arch: [512, 1024, 1024, 512]
+    log_std_init: -3
+
+train:
+  total_steps: 9000000        # 6M reached 0.97 mean with pick-place still climbing at 0.77
+  eval_freq: 100000
+  n_eval_episodes: 30
+  checkpoint_freq: 200000
+  patience: 40

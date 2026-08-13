@@ -25,6 +25,10 @@ dev = [
     "pytest>=7.0",
     "ruff>=0.5",
 ]
+# Only needed to regenerate the report's figures from the TensorBoard logs.
+plots = [
+    "matplotlib>=3.8",
+]
 
 [tool.setuptools.packages.find]
 include = ["mtsac*"]

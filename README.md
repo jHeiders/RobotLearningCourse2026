@@ -146,6 +146,31 @@ pytest -q          # env contract + config + end-to-end resume, ~25 s
 ruff check .
 ```
 
+## Report
+
+`report/` is the Overleaf project, pulled in as a git subtree — the `.tex` files are
+tracked in this repo, so a plain clone gets them and nothing extra is needed to read or
+edit them. Overleaf is still where it compiles; local builds are for working offline.
+
+```bash
+cd report && latexmk -pdf -outdir=build root.tex
+```
+
+Output lands in `report/build/`, which is gitignored — the tracked `root.pdf` is
+Overleaf's copy and only updates when Overleaf recompiles.
+
+Syncing, always in this order (the `overleaf` remote is already configured; credentials
+are username `git` and a token from Overleaf → Account Settings → Git integration):
+
+```bash
+git subtree pull --prefix=report overleaf main --squash   # web edits -> here
+git subtree push --prefix=report overleaf main            # here -> web
+```
+
+Keep `--squash` on every pull, and pull before you push: Overleaf's bridge only accepts
+fast-forwards. Editing the same file in the web editor and locally at once gives an
+ordinary merge conflict.
+
 ## Meta-World v3 notes
 
 Verified against `metaworld==3.1.1`; several of these contradict the published
@@ -180,4 +205,5 @@ mtsac/callback.py      periodic evaluation, per-task logging, best-model saving
 mtsac/checkpoint.py    latest model + replay buffer, for --resume
 mtsac/config.py        loads a param/*.yaml and rejects unknown keys
 tests/                 env contract, config validation, end-to-end resume
+report/                the Overleaf paper, as a git subtree
 ```

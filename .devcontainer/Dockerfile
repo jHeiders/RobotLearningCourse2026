@@ -24,6 +24,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libxext6 \
     && rm -rf /var/lib/apt/lists/*
 
+# LaTeX for the report in report/, which is a git subtree of the Overleaf project.
+# Overleaf remains the authoritative compile; this is so the PDF can still be built
+# offline. A separate layer from the runtime libraries above so rebuilding one does
+# not re-download the other. texlive-full would be ~5 GB; this subset is ~1.5 GB and
+# covers the usual conference templates.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        latexmk \
+        biber \
+        texlive-latex-recommended \
+        texlive-latex-extra \
+        texlive-fonts-recommended \
+        texlive-bibtex-extra \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN groupadd --gid ${USER_GID} ${USERNAME} \
     && useradd --uid ${USER_UID} --gid ${USER_GID} -m -s /bin/bash ${USERNAME}
 

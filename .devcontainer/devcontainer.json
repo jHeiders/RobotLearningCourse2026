@@ -66,13 +66,17 @@
             "extensions": [
                 "ms-python.python",
                 "charliermarsh.ruff",
-                "ms-toolsai.tensorboard"
+                "ms-toolsai.tensorboard",
+                "james-yu.latex-workshop"
             ],
             "settings": {
                 // Must match UV_PROJECT_ENVIRONMENT in the Dockerfile: the virtualenv
                 // lives in the bind-mounted workspace, not in the user's home.
                 "python.defaultInterpreterPath": "/workspace/.venv/bin/python",
-                "python.testing.pytestEnabled": true
+                "python.testing.pytestEnabled": true,
+                // Keep .aux/.bbl/.log out of report/, which is synced to Overleaf:
+                // one ignored directory instead of a dozen ignored extensions.
+                "latex-workshop.latex.outDir": "%DIR%/build"
             }
         }
     }

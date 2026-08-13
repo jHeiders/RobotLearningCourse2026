@@ -17,3 +17,7 @@ wandb/
 *.mp4
 
 reference/*
+
+# local LaTeX builds — Overleaf compiles its own copy, and only tracked files
+# are pushed back to it by `git subtree push`
+report/build/
