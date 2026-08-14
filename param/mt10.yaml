@@ -63,8 +63,11 @@ sac:
     log_std_init: -3
 
 train:
-  total_steps: 10000000
+  total_steps: 6000000        # the step budget the ablation arms are compared at
   eval_freq: 100000
   n_eval_episodes: 30
   checkpoint_freq: 200000
-  patience: 25
+  # As the control arm this has to run the full budget and be seen to stay flat. Eight tasks
+  # are pinned at 1.00 and two at 0.00, so every task is permanently without a new personal
+  # best and the usual patience would stop it within a few evaluations.
+  patience: 60

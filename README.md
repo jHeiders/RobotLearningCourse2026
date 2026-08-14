@@ -171,6 +171,20 @@ Keep `--squash` on every pull, and pull before you push: Overleaf's bridge only 
 fast-forwards. Editing the same file in the web editor and locally at once gives an
 ordinary merge conflict.
 
+Both subtree commands need a clean working tree — any uncommitted change anywhere in the
+repo aborts them with `working tree has modifications`, not just changes under `report/`.
+Stash everything first and pop after the merge commit:
+
+```bash
+git stash push                                            # untracked files are left alone
+git subtree pull --prefix=report overleaf main --squash
+git add report/root.tex && git commit                     # only if the pull conflicted
+git stash pop
+```
+
+`subtree push` sends committed history only, so commit your report edits before pushing —
+with them still in the working tree it reports `Everything up-to-date` and sends nothing.
+
 ## Meta-World v3 notes
 
 Verified against `metaworld==3.1.1`; several of these contradict the published

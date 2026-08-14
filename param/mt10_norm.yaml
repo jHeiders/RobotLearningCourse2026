@@ -1,0 +1,43 @@
+# Ablation arm C: normalised critic loss, no curriculum.
+#
+# This is the arm that tests the diagnosis on its own. If the two failing tasks are failing
+# because their residuals are negligible in a shared squared-error loss, then correcting the
+# scale should be sufficient and the curriculum should be optional. If instead this arm
+# fails and only the combined arm works, the curriculum is doing the real work and the
+# diagnosis is incomplete.
+#
+# Identical to mt10_norm_curr.yaml except that replay sampling stays uniform.
+
+algo: mtsac
+id: mt10_norm
+tasks: mt10
+
+env:
+  max_episode_steps: 200
+  use_one_hot: true
+  vector_strategy: async
+  envs_per_task: 9
+
+sac:
+  policy: LayerNormSACPolicy
+  learning_rate: 3.0e-4
+  buffer_size: 3300000
+  learning_starts: 5000
+  batch_size: 384
+  tau: 1.0e-3
+  gamma: 0.95
+  train_freq: 1
+  gradient_steps: 60
+  ent_coef: auto
+  target_entropy: auto
+  normalize_critic_loss: true
+  policy_kwargs:
+    net_arch: [512, 1024, 1024, 512]
+    log_std_init: -3
+
+train:
+  total_steps: 6000000
+  eval_freq: 100000
+  n_eval_episodes: 30
+  checkpoint_freq: 200000
+  patience: 25

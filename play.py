@@ -38,7 +38,18 @@ def main() -> None:
         render_mode="human" if args.render else None,
         **cfg["env"],
     )
-    model = ALGO_TABLE[cfg["algo"]].load(run_dir / args.model, env=env)
+    model = ALGO_TABLE[cfg["algo"]].load(
+        run_dir / args.model,
+        env=env,
+        # The checkpoint carries the training buffer's settings, whose task_ids are sized
+        # for the training layout and do not fit the one-environment-per-task eval layout.
+        # Playing never samples, so the buffer is replaced with an empty default one.
+        custom_objects={
+            "replay_buffer_class": None,
+            "replay_buffer_kwargs": {},
+            "buffer_size": 1,
+        },
+    )
 
     try:
         successes, returns = evaluate(model, env, args.episodes)
