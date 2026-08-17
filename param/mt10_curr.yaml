@@ -1,33 +1,16 @@
-# param/mt10.yaml plus a curriculum over replay sampling. Nothing else differs.
+# Ablation arm B: replay curriculum, no normalised critic loss.
 #
-# The uniform MT10 run solved eight tasks and left pick-place and peg-insert-side at
-# exactly 0.00 for 2.2M steps -- not learning slowly, but never moving: a probe of the
-# saved policy found the gripper approached the object 2 times in 15 episodes on
-# pick-place and 0 in 15 on peg-insert-side, against 15 in 15 for push. Their evaluation
-# return sat at the reward floor from the first evaluation onwards.
+# param/mt10_curr_warmstart_probe.yaml already tested this, but warm-started from the baseline's 2.2M
+# checkpoint, which makes it a probe rather than an arm: it shares the baseline's optimiser
+# state and replay contents, and covers a different step range than the other arms. This
+# file runs the same mechanism from scratch to the full budget so the four cells of the
+# ablation are directly comparable.
 #
-# The MT3 run that did solve pick-place had two things this one does not both have:
-#
-#   retention   330k transitions of its own in the buffer. param/mt10.yaml already
-#               matches this -- buffer_size was sized for it.
-#   batch share 128 of every 384 samples in a gradient step. Here pick-place gets 38,
-#               because the batch is split ten ways and eight of those tasks are at 1.00
-#               and learn nothing further from their share.
-#
-# This file restores the second. The weighting rule is w = clip(1 - success, 0.1, 0.6),
-# which at eight solved tasks and two at zero gives the two failing tasks 115 samples per
-# gradient step each and the solved ones 19 -- so pick-place trains under essentially the
-# condition that solved it on MT3 (115 against 128), with retention already right.
-#
-# This is not the MT3 curriculum result being retried. There the arm failed because
-# pick-place already had a third of the batch under a uniform split, so reweighting had
-# nothing to give it; here it triples the share.
-#
-# The floor is what keeps the eight solved tasks from being forgotten at 19 samples each.
-# If any of them starts slipping in the evaluations, raise it to 0.15 -- that is the knob
-# to reach for, not the cap.
+# Identical to mt10_norm_curr.yaml except that the critic loss is left unnormalised. It runs
+# through MTSAC with the flag off rather than through stock SAC, so that all four arms share
+# one code path; tests/test_mtsac.py asserts that this is equivalent to plain SAC.
 
-algo: sac
+algo: mtsac
 id: mt10_curr
 tasks: mt10
 
@@ -35,31 +18,35 @@ env:
   max_episode_steps: 200
   use_one_hot: true
   vector_strategy: async
-  envs_per_task: 9            # uniform: the curriculum reweights replay, not collection
+  envs_per_task: 9
 
 sac:
   policy: LayerNormSACPolicy
   learning_rate: 3.0e-4
-  buffer_size: 3300000        # 330k retained per task, matching mt3_uniform
+  buffer_size: 3300000
   learning_starts: 5000
   batch_size: 384
   tau: 1.0e-3
   gamma: 0.95
   train_freq: 1
-  gradient_steps: 60          # 0.67 gradient steps per collected transition, as on MT3
+  gradient_steps: 60
   ent_coef: auto
   target_entropy: auto
   replay_buffer_class: TaskWeightedReplayBuffer
   replay_buffer_kwargs:
-    floor: 0.1                # a solved task keeps a share, so it is not forgotten
-    cap: 0.6                  # a stuck task cannot take the whole budget
+    floor: 0.1
+    cap: 0.6
   policy_kwargs:
     net_arch: [512, 1024, 1024, 512]
     log_std_init: -3
 
 train:
-  total_steps: 10000000
+  total_steps: 9000000        # the budget every arm is compared at, set by mt10_norm_curr
   eval_freq: 100000
   n_eval_episodes: 30
   checkpoint_freq: 200000
-  patience: 25
+  # No early stopping. If the curriculum alone does not lift the two hard tasks this arm goes
+  # flat -- eight tasks pinned at 1.00, two at 0.00, so no task sets a personal best -- and
+  # that is precisely the outcome that has to be seen to hold for the full budget rather than
+  # be cut short. The combined arm's peg-insert-side was still at 0.00 at 2.7M.
+  patience: null

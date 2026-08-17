@@ -2,7 +2,7 @@
 # setting in this file it names no task and is decided by the run itself while it runs.
 #
 # Where this comes from. param/mt10.yaml solved eight of ten tasks and left pick-place and
-# peg-insert-side at 0.00. param/mt10_curr.yaml added the replay curriculum, which raised
+# peg-insert-side at 0.00. param/mt10_curr_warmstart_probe.yaml added the replay curriculum, which raised
 # pick-place's share from 38 to 115 samples per gradient step and moved it off zero for the
 # first time (0.03, 0.07, 0.17), but never made it stick, and did nothing at all for
 # peg-insert-side. A CPU probe of the scripted experts then measured why -- the peak reward

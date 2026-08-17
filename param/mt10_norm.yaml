@@ -36,8 +36,11 @@ sac:
     log_std_init: -3
 
 train:
-  total_steps: 6000000
+  total_steps: 9000000        # the budget every arm is compared at, set by mt10_norm_curr
   eval_freq: 100000
   n_eval_episodes: 30
   checkpoint_freq: 200000
-  patience: 25
+  # No early stopping: this arm holds both hard tasks at 0.00, so every task is permanently
+  # without a personal best and any patience would cut it short of the budget it has to be
+  # seen to hold flat for.
+  patience: null

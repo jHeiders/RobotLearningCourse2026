@@ -1,26 +1,36 @@
 #!/usr/bin/env bash
-# Queue the remaining MT10 runs, one after another.
+# Queue every MT10 run still outstanding, one after another. ~98 h total on one T1000.
 #
-#   ./run_ablation.sh             # mt10_norm only, ~32 h -- the run the argument needs
-#   ./run_ablation.sh full        # additionally the curriculum-only arm, ~64 h total
-#   ./run_ablation.sh extras      # additionally the baseline to 6M and a second seed
+#   tmux new -s ablation                # or nohup; closing the terminal must not kill it
+#   ./run_ablation.sh
 #
-# The argument is that the two unlearned tasks fail because of reward scale, not because
-# they get too little data. With the baseline (results/mt10_s0) and the combined arm
-# (results/mt10_norm_curr_s0) already measured, one run completes it:
+# The proposed method is mt10_norm_curr, which ran to 9M. Every other arm is a comparison
+# against it and therefore has to be measured at the same 9M budget -- an arm stopped at 6M
+# cannot answer "would it have broken through later", and the combined arm's own
+# peg-insert-side was still at exactly 0.00 at 2.7M. All four configs are set to
+# total_steps 9000000 with patience null; see the comment in each.
 #
-#   mt10_norm           normalisation, no curriculum. baseline -> this isolates what the
-#                       normalisation does; this -> combined isolates what the curriculum
-#                       adds on top. If it alone lifts the two tasks, the diagnosis is
-#                       demonstrated rather than asserted.
+# What is still missing, in the order this runs them:
 #
-# The curriculum-only cell answers only "what does the curriculum do by itself", which the
-# warm-started probe already indicated and which stops mattering if normalisation turns out
-# to be sufficient. It is therefore optional, behind `full`.
+#   mt10_curr           The empty cell of the 2x2: curriculum, no normalisation, from
+#                       scratch. results/mt10_curr_warmstart_probe_s0 tested the same mechanism but was
+#                       warm-started from the baseline's 2.2M checkpoint, so it opens with
+#                       eight tasks already at 1.00 and is not comparable. Without this cell
+#                       the ablation cannot answer whether the normalisation contributes at
+#                       all, given that mt10_norm alone did nothing.
 #
-# Start this only once the current training run has finished -- it does not check, and two
-# runs on one GPU will simply halve each other's throughput. Launch it under tmux, or with
-# nohup, so closing the terminal does not take the queue with it.
+#   mt10_norm           Measured to 5.9M, both hard tasks at exactly 0.00 throughout.
+#                       Resumed here to 9M so that "0.00" is a statement about the same
+#                       budget the proposed method got.
+#
+#   mt10                The baseline, stopped by hand at 2.3M after 23 flat evaluations.
+#                       Same reason, and it is the control the other three are read against.
+#
+# --resume is passed to all three. train.py ignores it when the run has no checkpoint, so
+# mt10_curr starts from zero on the first pass, and re-running this script after a
+# crash or a reboot picks every arm up where it stopped instead of restarting it.
+#
+# Afterwards: python report/make_figures.py, with BUDGET set to 9.0.
 
 set -u
 cd "$(dirname "$0")"
@@ -28,26 +38,15 @@ cd "$(dirname "$0")"
 run() {
     local config=$1 seed=${2:-0}
     echo "=== $(date '+%F %T')  starting $config seed $seed"
-    if python train.py "$config" --seed "$seed" --wandb; then
+    if python train.py "$config" --seed "$seed" --wandb --resume; then
         echo "=== $(date '+%F %T')  finished $config seed $seed"
     else
         echo "!!! $(date '+%F %T')  FAILED $config seed $seed, continuing"
     fi
 }
 
-run mt10_norm 0
-
-if [ "${1:-}" = "full" ] || [ "${1:-}" = "extras" ]; then
-    # Only worth the 32 h if mt10_norm shows the curriculum still carries some of the work.
-    run mt10_curr_scratch 0
-fi
-
-if [ "${1:-}" = "extras" ]; then
-    # Neither changes the argument. The baseline has been flat for 800k steps with both
-    # tasks at exactly zero, and one extra seed is reassurance rather than statistics.
-    echo "=== $(date '+%F %T')  resuming mt10 seed 0 to the full 6M budget"
-    python train.py mt10 --seed 0 --wandb --resume || echo "!!! mt10 resume failed"
-    run mt10_norm_curr 1
-fi
+run mt10_curr 0           # ~47 h from zero
+run mt10_norm 0           # ~16 h, 5.9M -> 9M
+run mt10 0                # ~35 h, 2.3M -> 9M
 
 echo "=== $(date '+%F %T')  queue done"

@@ -12,6 +12,11 @@
 \usepackage{amssymb}
 \usepackage{booktabs}
 \usepackage{url}
+\usepackage{xcolor}
+
+% Every number still waiting on a run. Grep for \pending before submitting; the macro is
+% deliberately loud so a forgotten one cannot survive a read-through.
+\newcommand{\pending}[1]{\textcolor{red}{\textbf{[#1]}}}
 
 \title{\LARGE \bf
 From Single-Task to Multi-Task Soft Actor-Critic on Meta-World:\\
@@ -43,11 +48,13 @@ failing tasks are negligible in the shared squared-error critic loss. Acting on 
 normalise the critic loss by a per-task running estimate of return scale --- an adaptation
 of PopArt --- and combine it with a replay curriculum weighted by measured failure rate.
 Both read only statistics the run computes about itself, so no per-task constants are
-involved. Mean success on MT10 rises from $0.79$ to $0.973$ at the 6M-step budget the
-ablation uses, and continuing that run to 9M brings all ten tasks to at least $0.9$ with a
-best evaluation of $0.993$ --- including the two that had never succeeded once under the
-baseline. We report the lessons of each stage, an ablation over the two mechanisms, a
-comparison against single-task SAC, and the limitations of a single-seed study.
+involved. Over a 9M-step budget mean success on MT10 rises from $0.79$ to $0.977$, with all
+ten tasks at or above $0.9$ at the best evaluation ($0.993$) --- including the two that had
+never succeeded once under the baseline. A four-arm ablation separates the two mechanisms
+and finds that the normalisation on its own leaves both hard tasks at exactly zero for the
+first 6M steps, so what fixes them is the combination rather than either part alone.
+We report the lessons of each stage, the ablation, a comparison against single-task SAC, and
+the limitations of a single-seed study.
 
 \end{abstract}
 
@@ -135,8 +142,9 @@ hidden critic layer. Learning rate $3\times10^{-4}$, $\tau = 10^{-3}$, $\gamma =
 automatic entropy tuning, $\log\sigma_{\text{init}} = -3$. MT10 uses 9 environments per task
 (90 total), a 3.3M-transition replay buffer, batch 384, and 60 gradient steps per collection
 round, which is an update-to-data ratio of $0.67$ --- the same ratio as on MT3. All runs
-were carried out on a single NVIDIA T1000 (8\,GB) with 20 CPU cores; one 6M-step MT10 run
-takes approximately 32 hours.
+were carried out on a single NVIDIA T1000 (8\,GB) with 20 CPU cores, at roughly 53
+environment steps per second; one 9M-step MT10 run therefore takes approximately 47 hours,
+and the four-arm ablation is about eight days of GPU time.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 \section{GETTING TO MT10}
@@ -365,35 +373,37 @@ need no further search, though we had neither the compute nor the time to verify
 
 \subsection{MT10 ablation}
 
-We ran the four combinations of the two mechanisms from scratch to 6M steps on the identical
-configuration of Sec.~\ref{sec:method}; the arms differ only in which flags are set.
+We ran the four combinations of the two mechanisms to 9M steps on the identical configuration
+of Sec.~\ref{sec:method}; the arms differ only in which flags are set, and no arm uses early
+stopping, so a flat arm is seen to stay flat for the whole budget rather than being cut
+short. 9M is the budget the combined arm used, and the other three are held to it because
+the effect under test appears late: the combined arm's \emph{peg-insert-side} was still at
+exactly $0.00$ at 2.7M, so an arm stopped at 6M could not be said to have failed.
 Fig.~\ref{fig:mean} gives mean success and Fig.~\ref{fig:hard} the two tasks the baseline
-never learns; Table~\ref{tab:mt10} lists the final numbers.
+never learns; Table~\ref{tab:mt10} lists the final numbers and Table~\ref{tab:pertask} the
+per-task breakdown.
 
 \begin{figure}[t]
   \centering
   \includegraphics[width=\columnwidth]{fig/mt10_mean.pdf}
   \caption{MT10 mean success over all ten tasks, for the four combinations of replay
-  curriculum and normalised critic loss. The dotted line marks the 6M-step budget at which
-  the arms are compared; the combined arm alone was continued past it.}
+  curriculum and normalised critic loss, each trained to the common 9M-step budget.}
   \label{fig:mean}
 \end{figure}
 
 \begin{figure}[t]
   \centering
   \includegraphics[width=\columnwidth]{fig/mt10_hard.pdf}
-  \caption{The two tasks the baseline never learns. Both remain at exactly zero without the
-  normalised critic loss.}
+  \caption{The two tasks the baseline never learns, per arm. \pending{one sentence on which
+  arms leave them at zero, once the curriculum-only arm has run}}
   \label{fig:hard}
 \end{figure}
 
-% NOTE: the curriculum-only and normalisation-only arms are still running; fill in the two
-% middle rows from `python report/make_figures.py` before submitting.
 \begin{table}[h]
-\caption{MT10 ablation at the common 6M-step budget, final evaluation. ``Solved'' counts
-tasks at or above $0.9$ out of ten. The combined arm was continued to 9M afterwards, where
-it reaches $10/10$ and a best mean of $0.993$; that continuation is excluded here so the
-arms remain comparable.}
+\caption{MT10 ablation at the common 9M-step budget, final evaluation. ``Solved'' counts
+tasks at or above $0.9$ out of ten. \pending{fill the three ``?'' rows from
+\texttt{python report/make\_figures.py}; the numbers printed under ``at each arm's
+endpoint'' are the ones to quote}}
 \label{tab:mt10}
 \begin{center}
 \small
@@ -401,40 +411,100 @@ arms remain comparable.}
 \toprule
 curriculum & normalisation & pick-pl. & peg-ins. & solved & mean \\
 \midrule
---       & --       & 0.00 & 0.00 & 8 & 0.793 \\
-\checkmark & --     & \multicolumn{4}{c}{\emph{running}} \\
---       & \checkmark & \multicolumn{4}{c}{\emph{running}} \\
-\checkmark & \checkmark & \textbf{0.77} & \textbf{1.00} & 9 & \textbf{0.973} \\
+--         & --         & ?    & ?    & ? & ?     \\
+\checkmark & --         & ?    & ?    & ? & ?     \\
+--         & \checkmark & ?    & ?    & ? & ?     \\
+\checkmark & \checkmark & \textbf{0.83} & \textbf{0.97} & 9 & \textbf{0.977} \\
 \bottomrule
 \end{tabular}
 \end{center}
 \end{table}
 
-The baseline plateaus at $0.79$ from 1.4M steps onwards with both hard tasks at exactly
-$0.00$ and their evaluation return at the reward floor.
+\begin{table}[h]
+\caption{Per-task success at the 9M budget, final evaluation. The effect is confined to the
+two tasks at the bottom; the other eight are solved by every arm.
+\pending{fill the first three columns}}
+\label{tab:pertask}
+\begin{center}
+\small
+\begin{tabular}{lcccc}
+\toprule
+task & neither & curr. & norm. & both \\
+\midrule
+reach                & ? & ? & ? & 1.00 \\
+push                 & ? & ? & ? & 1.00 \\
+door-open            & ? & ? & ? & 1.00 \\
+drawer-open          & ? & ? & ? & 1.00 \\
+drawer-close         & ? & ? & ? & 1.00 \\
+button-press-topdown & ? & ? & ? & 1.00 \\
+window-open          & ? & ? & ? & 1.00 \\
+window-close         & ? & ? & ? & 0.97 \\
+\midrule
+peg-insert-side      & ? & ? & ? & \textbf{0.97} \\
+pick-place           & ? & ? & ? & \textbf{0.83} \\
+\bottomrule
+\end{tabular}
+\end{center}
+\end{table}
 
-With both mechanisms enabled, \emph{peg-insert-side} records its first non-zero evaluation
-at 2.7M steps, passes $0.5$ at 3.3M and reaches $1.00$ --- all 30 evaluation episodes --- at
-5.6M. \emph{Pick-place} follows the same trajectory roughly 800k steps behind. At the 6M
-budget the run reaches mean success $0.973$ with nine tasks at or above $0.9$.
+\textbf{Neither mechanism (baseline).} Mean success plateaus at $0.79$ from 1.4M steps
+onwards, with both hard tasks at exactly $0.00$ and their evaluation return at the reward
+floor from the first evaluation. \pending{confirm the plateau holds to 9M and give the final
+mean}
 
-Because both hard tasks were still improving at 6M we continued this arm to 9M; the other
-arms stop at the budget, and the tables quote the budget so the comparison stays
-like-for-like. Over the last 1M steps mean success holds between $0.973$ and $0.993$,
-\emph{pick-place} rises into a $0.83$--$1.00$ band and \emph{peg-insert-side} holds
-$0.93$--$1.00$. Four evaluations have all ten tasks at or above $0.9$ simultaneously, the
-best of them at mean $0.993$ (8.4M steps). Both tasks that the baseline left at exactly zero
-are therefore solved, not merely lifted off the floor.
+\textbf{Normalisation only.} Correcting the critic loss for return scale, without the
+curriculum, does not move either hard task: both read exactly $0.00$ at every evaluation
+through the first 6M steps, and mean success ends at $0.790$ --- within noise of the
+baseline's $0.793$. \pending{confirm to 9M} This is the result we did not expect, since the
+measurement in Sec.~\ref{sec:mt10stall} identifies return scale as the binding constraint
+and this arm was pre-registered as the test of that diagnosis. Sec.~\ref{sec:whatitmeans}
+takes up what it implies.
 
-Two observations qualify this. First, normalisation gives no early advantage: at 2.2M the
-combined arm is marginally \emph{behind} the baseline ($0.777$ against $0.793$). The
-mechanism does not accelerate tasks that are already learnable; it makes tasks learnable
-that otherwise never become so, and that only shows after 2.5M steps. Second, there is a
-cost. \emph{Push} --- solved and stable at $1.00$ in the baseline --- becomes noisy under
-the curriculum, oscillating between $0.80$ and $1.00$, because the floor $\ell = 0.1$
-deliberately reduces a solved task's replay share to 19 samples per batch. The mean is far
-higher regardless, but this identifies $\ell$ as the parameter to raise if a solved task
-were to degrade further.
+\textbf{Curriculum only.} \pending{whole paragraph: does the curriculum alone lift either
+task off zero, and if so does it consolidate? compare against the warm-started probe, which
+reached 0.03/0.07/0.17 on pick-place and never held it}
+
+\textbf{Both.} \emph{Peg-insert-side} records its first non-zero evaluation at 2.7M steps,
+passes $0.5$ at 3.3M and reaches $1.00$ --- all 30 evaluation episodes --- at 5.6M.
+\emph{Pick-place} follows the same trajectory roughly 800k steps behind. At 6M the run is
+already at mean $0.973$ with nine tasks at or above $0.9$, and over the last 1M steps mean
+success holds between $0.973$ and $0.993$, with \emph{pick-place} in a $0.83$--$1.00$ band
+and \emph{peg-insert-side} at $0.93$--$1.00$. Four evaluations have all ten tasks at or
+above $0.9$ simultaneously, the best at mean $0.993$ (8.4M steps). Both tasks that the
+baseline left at exactly zero are therefore solved, not merely lifted off the floor.
+
+Two observations qualify this. First, the combination gives no early advantage: at 2.2M it
+is marginally \emph{behind} the baseline ($0.777$ against $0.793$). It does not accelerate
+tasks that are already learnable; it makes tasks learnable that otherwise never become so,
+and that only shows after 2.5M steps. Second, there is a cost. \emph{Push} --- solved and
+stable at $1.00$ in the baseline --- becomes noisy under the curriculum, oscillating between
+$0.80$ and $1.00$, because the floor $\ell = 0.1$ deliberately reduces a solved task's replay
+share to 19 samples per batch. The mean is far higher regardless, but this identifies $\ell$
+as the parameter to raise if a solved task were to degrade further.
+
+\subsection{What the ablation decides}
+\label{sec:whatitmeans}
+
+The two arms that isolate a single mechanism are what the diagnosis of
+Sec.~\ref{sec:mt10stall} stands or falls on, and we fix their reading here rather than after
+seeing them. Normalisation alone has already failed to move either task, so the scale
+argument is not sufficient on its own; what remains open is whether the normalisation is
+necessary at all. The curriculum-only arm decides that, and there are only two outcomes:
+
+\begin{itemize}
+\item \textbf{It also leaves both tasks at zero.} Then neither mechanism works alone and the
+      effect is an interaction: the curriculum decides how often a task is sampled, the
+      normalisation decides whether what it shows the critic registers, and each is useless
+      without the other. The diagnosis survives, but as one half of a joint condition rather
+      than as the single cause we proposed.
+\item \textbf{It lifts one or both tasks.} Then the curriculum is doing the work, the
+      normalisation is at best an accelerant, and the reward-scale account is wrong as an
+      explanation of the stall --- an outcome we would report as such. The measurement in
+      Sec.~\ref{sec:mt10stall} would still stand as a description of the imbalance; it would
+      simply not be what the fix acts on.
+\end{itemize}
+
+\pending{delete the branch that did not happen and state the conclusion in one paragraph}
 
 \subsection{The mechanism is visible in the statistics}
 
@@ -460,7 +530,8 @@ Comparing the completed MT10 run against the single-task runs of Table~\ref{tab:
 at their final evaluation: \emph{reach} $1.00$ against $1.00$, \emph{push} $1.00$ against
 $0.93$, \emph{pick-place} $0.83$ against $0.80$. The multi-task agent matches or exceeds
 single-task SAC on every task we trained separately, despite dividing its capacity ten ways
-and using 4.5M steps per task against the single-task runs' 2M. It also solves
+and collecting 900k environment steps per task --- under half the single-task runs' 2M ---
+since the 9M budget is a total across the suite. It also solves
 \emph{peg-insert-side}, which we never trained standalone. Sharing one critic across ten
 tasks cost us nothing measurable here once the scale imbalance was corrected; we make no
 claim of positive transfer, only that the usual multi-task penalty did not appear.
@@ -469,7 +540,7 @@ claim of positive transfer, only that the usual multi-task penalty did not appea
 \section{DISCUSSION AND LIMITATIONS}
 
 \textbf{Single seed.} Every number here comes from one seed per configuration. One T1000 and
-32 hours per MT10 run did not allow seed replication alongside the ablation. The central
+47 hours per MT10 arm did not allow seed replication alongside the ablation. The central
 claim is robust to this in one respect --- a task moving from exactly $0.00$ across 23
 consecutive evaluations to $1.00$ on 30 episodes is not seed noise --- but the mean-success
 differences between arms should be read as indicative rather than significant.
@@ -479,8 +550,15 @@ tested the curriculum by warm-starting it from the baseline's 2.2M checkpoint. I
 \emph{pick-place} off zero for the first time ($0.03$, $0.07$, $0.17$ over successive
 evaluations) but never consolidated it, and did nothing for \emph{peg-insert-side}. That
 probe is what prompted the diagnosis in Sec.~\ref{sec:mt10stall}, but it shares optimiser
-state and replay contents with the baseline and covers a different step range, so we do not
-report it as an arm.
+state and replay contents with the baseline, opens with eight tasks already at $1.00$, and
+covers only 2.2M--3.4M steps, so we do not report it as an arm. The curriculum-only row of
+Table~\ref{tab:mt10} is a separate run from scratch.
+
+\textbf{The baseline was stopped and restarted.} The uniform baseline was first halted by
+hand at 2.3M steps, after 23 consecutive evaluations with both hard tasks at exactly $0.00$
+and mean success flat, and was resumed from its checkpoint to the full 9M budget once we
+decided every arm had to be measured at the same horizon. It is therefore one run with an
+interruption, not two.
 
 \textbf{The episode cap bounds \emph{peg-insert-side}.} Our scripted-expert measurement
 implies a ceiling near 85\% at 200 steps, yet the learned policy reaches $1.00$. The learned
@@ -500,9 +578,10 @@ tasks that would not learn. The useful lesson for us was that the obvious explan
 little data --- was testable and false, and that a cheap CPU measurement (the reward a random
 policy can reach on each task) identified the real constraint after two full training runs
 had failed to fix it. Correcting the critic loss for per-task return scale, together with a
-replay curriculum, took MT10 mean success from $0.79$ to $0.973$ at a matched budget, and to
-all ten tasks solved when that run was continued to 9M --- including
-\emph{peg-insert-side}, which had never once succeeded beforehand.
+replay curriculum, took MT10 mean success from $0.79$ to $0.977$ at a matched 9M budget,
+with all ten tasks at or above $0.9$ at the best evaluation --- including
+\emph{peg-insert-side}, which had never once succeeded beforehand. \pending{one sentence on
+what the single-mechanism arms showed, from Sec.~\ref{sec:whatitmeans}}
 
 Neither mechanism is new in itself: the normalisation is an adaptation of PopArt and the
 curriculum is a standard failure-rate rule with a floor and a cap. What we would keep from

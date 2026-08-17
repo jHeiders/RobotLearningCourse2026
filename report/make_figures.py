@@ -24,7 +24,7 @@ FIG = Path(__file__).resolve().parent / "fig"
 # The 2x2: replay curriculum on/off x normalised critic loss on/off.
 ARMS = [
     ("mt10_s0", "neither", "0.55", "-"),
-    ("mt10_curr_scratch_s0", "curriculum", "tab:orange", "-"),
+    ("mt10_curr_s0", "curriculum", "tab:orange", "-"),
     ("mt10_norm_s0", "normalisation", "tab:green", "-"),
     ("mt10_norm_curr_s0", "both", "tab:blue", "-"),
 ]
