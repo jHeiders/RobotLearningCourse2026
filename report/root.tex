@@ -18,167 +18,303 @@
 % deliberately loud so a forgotten one cannot survive a read-through.
 \newcommand{\pending}[1]{\textcolor{red}{\textbf{[#1]}}}
 
+% Revision markup: everything changed in this revision pass is wrapped in \rev so it can
+% be traced against the previous version. Redefine to \newcommand{\rev}[1]{#1} to clear.
+\newcommand{\rev}[1]{\textcolor{blue}{#1}}
+
 \title{\LARGE \bf
-From Single-Task to Multi-Task Soft Actor-Critic on Meta-World:\\
-Diagnosing Why Two MT10 Tasks Never Learn
+Scaling Soft Actor-Critic from Single-Task to Multi-Task on Meta-World\\[4pt]
+\large Project Report, 384.195 Robot Learning, TU Wien
 }
 
-\author{Johannes Heidersberger and Hemjyoti Das%
-\thanks{Project report for 384.195 Robot Learning, TU Wien.}%
-}
+\author{Johannes Heidersberger and Hemjyoti Das}
 
 \begin{document}
 
 \maketitle
-\thispagestyle{empty}
-\pagestyle{empty}
+\pagestyle{plain}
+\pagenumbering{arabic}
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 \begin{abstract}
 
-This report documents our course project on multi-task reinforcement learning with Soft
-Actor-Critic (SAC) on Meta-World, worked through in three stages: single tasks, the
-three-task suite MT3, and the ten-task suite MT10. Our MT10 baseline learns eight of the ten
-tasks and leaves \emph{pick-place} and \emph{peg-insert-side} at exactly zero success for as
-long as we train it. Rather than tune further, we tried to establish why. Measuring the peak
-per-step reward a random policy encounters gives $3.59$ on \emph{reach} but $0.03$ on
-\emph{peg-insert-side}, a 120-fold spread matching the order in which the ten tasks are
-learned. Since the solved tasks reach returns near $1{,}800$, the residuals belonging to the
-failing tasks are negligible in the shared squared-error critic loss. Acting on this, we
-normalise the critic loss by a per-task running estimate of return scale --- an adaptation
-of PopArt --- and combine it with a replay curriculum weighted by measured failure rate.
-Both read only statistics the run computes about itself, so no per-task constants are
-involved. Over a 9M-step budget mean success on MT10 rises from $0.79$ to $0.977$, with all
-ten tasks at or above $0.9$ at the best evaluation ($0.993$) --- including the two that had
-never succeeded once under the baseline. A four-arm ablation separates the two mechanisms
-and finds that the normalisation on its own leaves both hard tasks at exactly zero for the
-first 6M steps, so what fixes them is the combination rather than either part alone.
-We report the lessons of each stage, the ablation, a comparison against single-task SAC, and
-the limitations of a single-seed study.
+We report a course project on multi-task reinforcement learning with Soft Actor-Critic
+(SAC) on Meta-World, carried out in three stages: single tasks, the three-task suite MT3, and
+the ten-task suite MT10. Each stage exposed a different constraint. On single tasks it was
+critic stability, fixed by running many environments in parallel and shortening the effective
+horizon. On MT3 an apparent allocation problem was in fact a capacity problem: enlarging the
+shared learner solved all three tasks under an equal environment split, so we kept no per-task
+allocation. On MT10 that configuration solves eight tasks quickly, reaches a ninth late, and
+leaves the tenth at zero success throughout. Measuring the reward a random policy can reach
+shows a spread of a factor of 85 across the suite, and that the hardest tasks supply too few of
+the samples in each training batch for the shared critic to fit them. Weighting replay by each
+task's measured failure rate, using no constant that names a task, solves the task that
+otherwise never succeeds and raises mean success from $0.877$ to $0.967$ at the same 9M-step
+budget.
 
 \end{abstract}
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 \section{INTRODUCTION}
 
-Multi-task reinforcement learning asks a single policy to solve several tasks at once.
-Meta-World \cite{yu2020metaworld} is the standard benchmark for this in robot manipulation:
-a Sawyer arm, a shared observation and action space, and task suites of increasing size. The
-assignment for this project was to train SAC \cite{haarnoja2018sac} on individual Meta-World
-tasks, then on MT3, then on MT10, and to report what changes between those settings.
+A robot that is useful in more than one situation has to hold more than one skill at a time.
+Training a separate policy per skill does not scale: each policy needs its own data, its own
+tuning and its own storage, and nothing learned in one transfers to the next. Multi-task
+reinforcement learning instead asks a single policy to solve a set of tasks at once, so that
+shared structure, such as the same arm, the same observation space and the same notion of
+reaching and grasping, is learned once rather than repeatedly. Where the tasks really do share
+structure, this should cost less experience in total than training them apart, and we
+find exactly that on MT3 (Sec.~\ref{sec:mt3vs1}). The resulting policy is also a single model
+to deploy and maintain rather than one per skill.
 
-The multi-task agent is the natural baseline and needs no algorithmic change: all tasks run
-concurrently, a task one-hot is appended to the observation, and one replay buffer is shared
---- multi-task SAC (MT-SAC). What we found is that it has a sharp, reproducible failure
-mode. On MT10 eight tasks reach $1.00$ within roughly 1.5M environment steps, and
-\emph{pick-place} and \emph{peg-insert-side} then sit at exactly $0.00$ indefinitely. They
-do not learn slowly; they do not learn at all, and their evaluation return stays at the
-reward floor from the first evaluation onwards.
+The difficulty is that a shared learner also shares its failure modes. One network, one
+replay buffer and one loss now serve tasks that differ in how hard they are to explore, how
+much reward they expose early, and how long they take to become learnable at all. Nothing in
+the algorithm balances those differences, and an average over tasks can look healthy while
+individual tasks receive almost none of the learning signal.
 
-The intuitive reading is a data-allocation problem --- the hard tasks are a tenth of the
-experience and need a larger share --- and the common remedy is a curriculum that samples
-failing tasks more often. We implemented that remedy, and it was not sufficient. Most of
-this report is an account of finding out why.
+Meta-World \cite{yu2020metaworld}, the standard benchmark for this in robot manipulation,
+is designed so that its tasks are genuinely related, which makes it a fair setting in which to
+ask whether a shared learner is enough on its own. Our project followed its suites upwards,
+from one task to three and then to ten, treating each stage as a test of which of our
+assumptions survived the increase in task count.
 
-What we did in this project:
+Our contributions are as follows.
 
 \begin{itemize}
-\item Trained SAC on single Meta-World tasks, MT3 and MT10, and recorded which
-      configuration choices actually mattered at each stage (Sec.~\ref{sec:stages}).
-\item Diagnosed the MT10 stall by measurement rather than by trial: we ruled out
-      exploration collapse, replay retention and the episode-length cap with CPU probes of
-      a saved policy, and identified reward scale as the binding constraint
+\item A staged empirical study of SAC \cite{haarnoja2018sac} on Meta-World across single
+      tasks, MT3 and MT10, recording which configuration choices changed the outcome and which
+      did not (Sec.~\ref{sec:experiments}), together with every modification we made to base
+      SAC and the stage that motivated it (Sec.~\ref{sec:method}).
+\item A measurement-driven diagnosis of the MT10 failure, ruling out three plausible
+      explanations by cheap CPU probes of a saved policy rather than by further training runs
       (Sec.~\ref{sec:mt10stall}).
-\item Implemented two mechanisms in response --- a replay curriculum weighted by failure
-      rate, and a per-task normalisation of the critic loss adapted from PopArt
-      \cite{vanhasselt2016popart,hessel2019popart} --- and ablated them against each other
-      (Sec.~\ref{sec:method}, Sec.~\ref{sec:results}).
-\item Held to the constraint that no setting may name an individual task. Hand-allocating
-      resources to whichever task is currently failing does work, but it amounts to tuning
-      until the benchmark passes and does not carry to a larger suite.
+\item A demonstration that a replay curriculum driven only by self-measured success makes
+      a task learnable that a uniform split never learns, at no lasting cost to the tasks
+      already solved (Sec.~\ref{sec:results}).
 \end{itemize}
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-\section{BACKGROUND}
+\section{RELATED WORK}
 
-Everything we use is established; this section records where it comes from.
+This section sets out the prior work that informed our design choices and says what we
+took from each line of it.
 
 \textbf{Multi-task RL on Meta-World.} Most work on this benchmark targets representation
 sharing: soft modularisation routes a shared network per task \cite{yang2020softmod}, and
 CARE mixes a set of encoders using task metadata \cite{sodhani2021care}. These change what
-the network computes, which is a different question from the one we ended up looking at.
-
-\textbf{Value normalisation.} PopArt \cite{vanhasselt2016popart} normalises value targets
-adaptively while preserving the network's outputs, and was applied to multi-task RL
-precisely because tasks differ in reward scale \cite{hessel2019popart}. That work uses
-discrete actions and separate value heads per task. Our setting has one shared
-continuous-control critic whose output SAC's actor consumes directly, so we scale the loss
-rather than the targets; this keeps $Q$ in real units and avoids PopArt's
-output-preservation correction, at the cost of not normalising the targets themselves.
+the network computes, which is orthogonal to the question we pursue: we keep a single
+shared network throughout and change only which data reaches it.
 
 \textbf{Task curricula.} Weighting task sampling by measured failure rate is a standard
 remedy for imbalanced multi-task training, typically as $p_i \propto f_i / \sum_j f_j$
-applied to episode collection. We apply the weights to replay sampling instead, and add a
-floor and a cap, for the reasons in Sec.~\ref{sec:curriculum}.
+applied to episode collection \cite{matiisen2020tscl}. Reweighting what a learner
+replays, rather than what it collects, is the idea behind prioritized experience replay
+\cite{schaul2016per} and, at the level of whole levels or tasks, prioritized level replay
+\cite{jiang2021plr}. Our rule combines the two: failure-rate weights applied to replay, with
+a floor and a cap, for the reasons in Sec.~\ref{sec:curriculum}.
 
 \textbf{Critic regularisation.} LayerNorm after each hidden critic layer is common to
 several recent value-learning stabilisers \cite{nauman2024bro,lee2025simba,bhatt2024crossq}.
-We adopted it from that work for the value-explosion problems described in
-Sec.~\ref{sec:stages} and kept it in every run from MT3 onwards. We did not ablate it, so we
-report it as an inherited design choice rather than as a finding of ours.
+We adopted it from that work for the value-explosion problem described in
+Sec.~\ref{sec:multitask}. We did not run an ablation isolating it, so we report it as a
+design choice taken from the literature rather than as an effect we measured ourselves.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-\section{PRELIMINARIES AND SETUP}
+\section{METHOD}
+\label{sec:method}
+
+Table~\ref{tab:mods} lists everything we changed relative to base SAC, in the order the
+stages introduced it. The first two entries are hyperparameter choices rather than changes to
+the algorithm, and we list them because each one decided whether a run succeeded at all. The
+remaining four change what the algorithm computes or which data it sees. Only the last is
+specific to this report.
+
+\begin{table}[tb]
+\caption{Changes relative to base SAC, by the stage that introduced them. The first two
+are hyperparameter choices; the rest change what the learner computes or sees.}
+\label{tab:mods}
+\vspace{-0.2cm}
+\begin{center}
+\small
+\begin{tabular}{llc}
+\toprule
+stage & change & Sec. \\
+\midrule
+single task & many parallel environments   & III-B \\
+single task & discount $\gamma = 0.95$     & III-B \\
+MT3         & task one-hot in observation  & III-C \\
+MT3         & shared replay buffer         & III-C \\
+MT3         & LayerNorm in the critic      & III-C \\
+MT10        & failure-rate replay curriculum & III-D \\
+\bottomrule
+\end{tabular}
+\vspace{-0.7cm}
+\end{center}
+\end{table}
+
+\subsection{Soft Actor-Critic}
+
+SAC \cite{haarnoja2018sac} is an off-policy actor-critic algorithm for continuous
+control. A \emph{critic} $Q(s,a)$ estimates the return obtainable from state $s$ after action
+$a$, and an \emph{actor} $\pi(a \mid s)$ proposes actions that score highly under it. Both are
+neural networks. Experience is stored in a \emph{replay buffer} and reused many times, which
+is what makes the method sample-efficient: each environment step can contribute to many
+gradient steps.
+
+Three of its properties matter for what follows. First, the critic is fitted by
+minimising the squared difference between its prediction and a bootstrapped target, averaged
+over a \emph{batch} of transitions drawn from the buffer. Which transitions are in that batch
+therefore decides what the critic learns, and this is the quantity our curriculum controls.
+Second, returns are discounted by a factor $\gamma \in (0,1)$, so a per-step reward bounded by
+$r_{\max}$ implies a return bounded by $r_{\max}/(1-\gamma)$; the discount thus sets the
+numerical scale the critic has to represent. Third, SAC adds an entropy bonus to the
+objective, which keeps the policy stochastic and therefore exploring; the strength of that
+bonus is tuned automatically during training. We refer to the resulting action noise when we
+rule out exploration collapse in Sec.~\ref{sec:mt10stall}.
+
+\subsection{Stabilising the critic on single tasks}
+\label{sec:critic}
+
+Two settings were forced on us at the single-task stage and kept everywhere afterwards.
+Sec.~\ref{sec:single} reports the runs that produced them.
+
+The first is running many environments in parallel rather than one. Consecutive
+transitions from a single environment are strongly correlated, so a batch drawn from a buffer
+filled by one environment covers a narrow region of the state space. The critic then fits that
+region well and extrapolates badly outside it, and because its own targets are bootstrapped
+from those extrapolations the error compounds. Running many environments decorrelates the
+buffer and removes that feedback loop.
+
+The second is the discount. With a per-step reward bounded by $10$, the bound
+$r_{\max}/(1-\gamma)$ is $200$ at $\gamma = 0.95$ but $1{,}000$ at $\gamma = 0.99$. The lower
+ceiling keeps the values the critic must represent small, which both reduces the size of the
+bootstrapped errors above and, once one critic serves many tasks, keeps the tasks' value
+magnitudes closer together. The cost is a shorter effective horizon, which we could afford
+because Meta-World episodes are capped at 200 steps.
+
+\subsection{Going multi-task}
+\label{sec:multitask}
+
+For a suite of $N$ tasks, all tasks run concurrently in a vectorised environment and an
+$N$-dimensional one-hot identifying the task is appended to every observation. A single actor
+and a single critic serve all tasks, conditioned on which task they are in, and one replay
+buffer is shared. This is the standard multi-task SAC (MT-SAC) baseline, and it is what makes
+sharing possible: the network can reuse whatever the tasks have in common and use the one-hot
+only where they differ.
+
+Sharing does introduce two quantities that no longer take care of themselves. The critic
+must now represent value functions of very different magnitudes in one set of weights, and the
+buffer must be divided between tasks. The first is why we add LayerNorm after each hidden
+critic layer from MT3 onwards, following \cite{nauman2024bro,lee2025simba,bhatt2024crossq}:
+normalising activations within each layer keeps them at a consistent scale regardless of the
+magnitude of the values being fitted, which is what stops a large-valued task from dominating
+the shared representation. We introduced it at MT3 rather than earlier because a single-task
+critic fits one scale and never faces the problem. The second quantity, how the buffer is
+divided, is the subject of the curriculum learning in Sec.~\ref{sec:curriculum}.
+
+\subsection{Failure-rate replay curriculum}
+\label{sec:curriculum}
+
+The last modification is a single rule, and Sec.~\ref{sec:mt10stall} is the measurement that
+motivates it. Let $\bar{s}_i$ be task $i$'s mean success over the last $M = 3$ evaluations.
+We weight replay sampling by
+%
+$$
+w_i \;\propto\; \mathrm{clip}\left(1 - \bar{s}_i,\; \ell,\; c\right),
+\qquad \ell = 0.1,\; c = 0.6
+\eqno{(1)}
+$$
+%
+normalised over tasks and applied as a per-environment sampling probability inside the
+replay buffer. Task-to-environment assignment is fixed at construction, so this costs one
+weighted draw per batch and no per-transition bookkeeping.
+
+Three choices distinguish this from the usual formulation.
+
+\textbf{It acts on replay, not collection.} How often a task is \emph{visited} and how
+often it is \emph{trained on} are separate quantities in an off-policy algorithm, because the
+buffer sits between them. Collecting more episodes of a failing task does not help if the
+batch still draws from it in proportion to a tenth of the buffer, and it costs environment
+steps. Reweighting replay changes what the critic actually fits, at no cost in environment
+steps, and it can draw on transitions collected long ago. Sec.~\ref{sec:mt10stall} shows that
+collection was never the binding constraint on MT10: under a uniform split the suite collects
+900k environment steps of each task over the budget, more than twice the 400k that were enough
+to solve pick-place on its own, so the failing tasks were not short of experience but short of
+attention.
+
+\textbf{The floor $\ell$.} Without it a task at success $1.00$ receives weight zero and
+leaves the batch entirely, and the shared weights then drift away from its solution as they
+move to accommodate the others. The floor guarantees every solved task a residual share and so
+prevents that forgetting.
+
+\textbf{The cap $c$.} Without it, a bare $f_i/\sum_j f_j$ rule gives two tasks stuck at
+zero success the whole batch between them. That forgets the solved tasks, and gains the failing
+ones nothing, since their difficulty is not a shortage of their own data. The cap bounds the
+ratio between the most and least sampled task at $c/\ell = 6$.
+
+We set $\ell$ and $c$ once, from the requirement that a solved task retain a
+non-negligible share while no task can monopolise the batch, and did not tune them further; we
+report in Sec.~\ref{sec:results} what the resulting shares were and what they cost. On MT10
+with eight tasks solved and two failing, eq. (1) gives each failing task about $30\%$ of every
+batch and each solved task about $5\%$, against $10\%$ each under a uniform split.
+
+\subsection{No per-task constants}
+
+No configuration file in this project names a task. The curriculum reads evaluation
+success, which the run measures, and the only hand-chosen constants, $\ell$, $c$ and the number
+of environments, are global. Buffer size, batch size, gradient steps and total steps follow by
+multiplying their MT3 values by the ratio of task counts, so each task keeps the replay
+capacity and the gradient steps per collected transition it had on MT3. A larger suite would
+therefore need no further search.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{EXPERIMENTAL SETUP}
 
 We use Meta-World v3 \cite{yu2020metaworld} through Gymnasium, with Stable-Baselines3's SAC
-\cite{raffin2021sb3} as the learner. For a suite of $N$ tasks, all tasks run concurrently in
-a vectorised environment, an $N$-dimensional one-hot identifying the task is appended to
-each observation, and one replay buffer is shared by all of them. Episodes are capped at 200
-steps. Success is Meta-World's binary per-task criterion, evaluated on 30 episodes per task
-every 100k environment steps.
+\cite{raffin2021sb3} as the learner. Episodes are capped at 200 steps. Success is
+Meta-World's binary per-task criterion, evaluated on 30 episodes per task every 100k
+environment steps. Network sizes and all hyperparameters, including the per-stage values
+of the settings that scale with task count, are given in Appendix~A.
 
-Networks are $[512, 1024, 1024, 512]$ for both actor and critic, with LayerNorm after each
-hidden critic layer. Learning rate $3\times10^{-4}$, $\tau = 10^{-3}$, $\gamma = 0.95$,
-automatic entropy tuning, $\log\sigma_{\text{init}} = -3$. MT10 uses 9 environments per task
-(90 total), a 3.3M-transition replay buffer, batch 384, and 60 gradient steps per collection
-round, which is an update-to-data ratio of $0.67$ --- the same ratio as on MT3. All runs
-were carried out on a single NVIDIA T1000 (8\,GB) with 20 CPU cores, at roughly 53
-environment steps per second; one 9M-step MT10 run therefore takes approximately 47 hours,
-and the four-arm ablation is about eight days of GPU time.
+All runs used a single NVIDIA T1000 (8\,GB) with 20 CPU cores at roughly 53 environment
+steps per second, so one 9M-step MT10 run takes about 47 hours; this is why MT10 is compared on
+a single seed and two configurations.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-\section{GETTING TO MT10}
-\label{sec:stages}
+\section{EXPERIMENTS}
+\label{sec:experiments}
 
-MT10 is the setting this report is about. The single-task and MT3 stages are included
+MT10 is the setting this report focuses on. The single-task and MT3 stages are reported
 because they are where the configuration MT10 inherits was decided, and because the MT3
-result is what talked us out of per-task allocation before we ever reached MT10. Neither
-stage is presented as a controlled experiment.
+result is what led us away from per-task allocation before we ever reached MT10.
+Neither stage is a controlled ablation: several settings change between rows, and we
+report them as development steps.
 
-\subsection{Single tasks: parallelism and the discount}
+\subsection{Single tasks}
+\label{sec:single}
 
-Training SAC on \emph{reach}, \emph{push} and \emph{pick-place} individually gave us the
-reference points in Table~\ref{tab:single} and two settings we kept for everything
-afterwards.
+Training SAC on reach, push and pick-place individually gave us the
+reference points in Table~\ref{tab:single} and the two settings of Sec.~\ref{sec:critic}.
 
-The first is the number of parallel environments, the second the discount. Our initial
-\emph{push} run used a single environment and $\gamma = 0.99$: it reached $0.20$ early, then
-collapsed to $0.00$ and stayed there, reproducibly, with a diverging critic. Moving to 16
-environments and $\gamma = 0.95$ took the same task to $1.00$. We changed both at once and
-did not go back to separate them, so we cannot say which mattered more; what we can say is
-that the combination was necessary, and we kept it for every later run.
+Our initial push run used a single environment and $\gamma = 0.99$. It reached $0.20$
+success early, then collapsed to $0.00$ and stayed there, reproducibly, with critic values
+growing without bound. Both mechanisms of Sec.~\ref{sec:critic} were acting at once. The
+single environment made consecutive samples in each batch highly correlated, so the critic was
+fitted on a narrow slice of the state space and its bootstrapped targets were drawn from
+regions it had never seen; and $\gamma = 0.99$ allowed a value five times larger before any
+divergence became visible, so the errors had room to grow. Because the actor follows the
+critic, a critic that has diverged points the policy at states that do not deliver the value
+it predicts, which is why success collapses rather than merely stalling. Moving to 16
+environments and $\gamma = 0.95$ took the same task to $1.00$. We changed both at once and did
+not separate them afterwards, so we cannot attribute the recovery to one alone; we report the
+combination as the configuration that worked and kept it for every later run.
 
-The reasoning behind the discount is worth stating because the same quantity returns in
-Sec.~\ref{sec:mt10stall}. With a per-step reward bounded by 10, the value of a solved task
-is bounded by $10/(1-\gamma)$: $200$ at $0.95$ but $1{,}000$ at $0.99$. The lower ceiling
-keeps the magnitudes the critic has to fit within a range where they remain comparable
-across tasks.
-
-\begin{table}[h]
-\caption{Single-task SAC, 2M environment steps each, final evaluation. The last row differs
-from the others in two settings at once and is reported as the failure that set the
-defaults, not as an isolated effect.}
+\begin{table}[tb]
+\caption{Single-task SAC success, 2.0M environment steps each, final evaluation. The last
+row differs in two settings at once, so it is not an isolated effect.}
 \label{tab:single}
+\vspace{-0.2cm}
 \begin{center}
 \small
 \begin{tabular}{lcc}
@@ -191,404 +327,363 @@ pick-place       & 16 envs, $\gamma = 0.95$ & 0.80 \\
 push             & 1 env, $\gamma = 0.99$   & 0.00 \\
 \bottomrule
 \end{tabular}
+\vspace{-0.7cm}
 \end{center}
 \end{table}
 
 \subsection{MT3: capacity, not allocation}
 \label{sec:mt3}
 
-MT3 (\emph{reach}, \emph{push}, \emph{pick-place}) is where the multi-task failure mode
-first appeared, and where runs are cheap enough to iterate. Table~\ref{tab:mt3} gives three
-configurations.
+MT3, comprising reach, push and pick-place, is where we move to multi-task training,
+where the corresponding failure modes first appear, and where runs are cheap enough to
+iterate. Pick-place is the only one of the three ever in doubt, and the three runs below are
+quoted at each run's final evaluation, on the full 6.0M-step budget except where noted.
+Our first run, on an equal $5/5/5$ environment split, left pick-place at $0.00$ success
+while the other two reached $1.00$. Hand-allocating environments towards it, at $2/4/9$,
+took it to $0.93$, and that is what first suggested an allocation problem.
 
-Our first MT3 run left \emph{pick-place} at $0.00$ after 6M steps. Hand-allocating
-environments towards it ($2/4/9$ instead of $5/5/5$) fixed it, reaching $0.93$, and this is
-what first suggested an allocation problem. The third row is what changed our mind:
-restoring a \emph{uniform} split while scaling the learner's capacity --- more parallel
-environments, a larger replay buffer, a larger batch, proportionally more gradient steps and
-a LayerNorm critic --- solves all three tasks completely, and does so without allocating
-anything to \emph{pick-place} in particular.
+What changed our mind is that restoring the equal split, at $9/9/9$, while enlarging
+the shared learner takes pick-place to $1.00$ with all three tasks solved, at which point
+early stopping fires at 5.0M steps. Nothing in that configuration is directed towards
+pick-place in particular. Three of those changes act on the difficulty identified in
+Sec.~\ref{sec:multitask}. Raising the number of parallel environments from 5 to 9 per task and
+the buffer from 300k to 1M transitions gives each task more decorrelated data of its own;
+raising the batch from 128 to 384 means each gradient step still sees a usable number of
+samples per task once the batch is divided three ways; and raising the gradient steps per
+collection round from 10 to 18 buys more optimisation from the same environment steps, which
+is what a task learned late needs most. Adding LayerNorm to the critic addresses the value
+scale directly. We changed these together, so the outcome belongs to the combination
+rather than to any single one. Per-run settings are in Appendix~A.
 
-These rows are development steps rather than an ablation: each changes several settings at
-once, so they cannot attribute the improvement to any single one. What they do establish is
-the weaker but sufficient claim we needed --- that the hand-tuned allocation was not
-necessary, because a configuration that never names a task reaches at least as far. That
-was enough to justify dropping per-task allocation before moving to MT10, where a
-controlled ablation is affordable because only two mechanisms are in question.
+What the comparison establishes is that the hand-tuned allocation was not necessary: a
+configuration that never refers to a particular task reaches at least as far. That was enough
+to drop per-task allocation before moving to MT10, where at 47 hours per run only a single
+controlled comparison is affordable.
 
-\begin{table}[h]
-\caption{MT3 after 6M environment steps, final evaluation on \emph{pick-place}, the only
-task of the three that is ever in doubt. These are successive development steps, not a
-controlled ablation: several settings change per row. The third row additionally uses a
-LayerNorm critic.}
-\label{tab:mt3}
-\begin{center}
-\small
-\begin{tabular}{lcccccc}
-\toprule
-configuration & envs & buffer & batch & $\gamma$ & grad. & pick-pl. \\
-\midrule
-initial          & 5/5/5 & 300k & 128 & 0.99 & 1  & 0.00 \\
-hand allocation  & 2/4/9 & 300k & 256 & 0.95 & 10 & 0.93 \\
-uniform, scaled  & 9/9/9 & 1M   & 384 & 0.95 & 18 & \textbf{1.00} \\
-\bottomrule
-\end{tabular}
-\end{center}
-\end{table}
+\subsection{MT3 against single-task}
+\label{sec:mt3vs1}
+
+The scaled MT3 run reaches $1.00$ success on all three of reach, push and pick-place. The
+single-task runs of Table~\ref{tab:single} reach $1.00$, $0.93$ and $0.80$ success on the
+same tasks, using 2.0M environment steps each, or 6.0M in total. MT3 matches or
+exceeds all three while using
+5.0M environment steps in total across the suite, and it does so with one network instead of
+three. This is the concrete form of the claim made in the introduction: on tasks that share
+structure, learning them together cost us less experience than learning them apart, not more.
+We make no claim about which shared component is responsible.
 
 \subsection{MT10: the stall, and what it is not}
 \label{sec:mt10stall}
 
-We carried the MT3 configuration to MT10 unchanged except for the four quantities that are
-functions of task count (buffer size, batch size, gradient steps, total steps). It solved
-eight of ten tasks and reproduced the stall exactly: mean success flat at $0.79$ from 1.4M
-steps, with \emph{pick-place} and \emph{peg-insert-side} at $0.00$ throughout. Scaling
-capacity was therefore not by itself the answer either.
+We carried the MT3 configuration to MT10 unchanged except for the quantities that are
+functions of task count (Appendix~A). It solved eight of ten tasks by 1.5M steps
+and then held mean success flat at $0.79$ for the next one million steps, with both remaining
+tasks at $0.00$ success. Scaling capacity was therefore not by itself the answer either.
 
-Three explanations were available. We tested all three on CPU by probing the saved policy,
-rather than by launching further training runs, and all three are wrong.
+Three explanations were consistent with what we could see, and we tested all three on CPU
+by probing a saved policy rather than by launching further training runs. None holds.
+\emph{Exploration collapse}: SAC's entropy bonus is tuned automatically, and had it decayed on
+the failing tasks the policy would have become too deterministic to stumble into a sparse
+success condition. It is contradicted as strongly as possible, since those two tasks carry the
+largest action noise in the run, not the smallest, so the standard remedy of a per-task entropy
+coefficient would push exploration where it is already highest. \emph{Insufficient retention}:
+the buffer is shared, so a task holds only a fraction of it and could be fitting scarce data.
+But that fraction is the same number of transitions that solved pick-place on its own at the
+single-task stage. \emph{Episode cap}: our 200-step limit is shorter than Meta-World's default,
+so a task needing longer would register zero success however well it was learning. It does bound
+one task, since Meta-World's scripted expert exceeds 200 steps on a minority of attempts, but
+the resulting ceiling near $85\%$ cannot explain a floor of exactly zero. The measurements are
+in Appendix~C.
 
-\emph{Exploration collapse.} If the failing tasks had lost their exploration noise they
-could not discover the sparse success condition. The measured per-task action standard
-deviation contradicts this as strongly as possible: \emph{peg-insert-side} is the
-\emph{noisiest} task in the run at $0.877$ and \emph{pick-place} second at $0.531$, against
-$0.272$ for the fully solved \emph{reach}. This also predicts that a per-task entropy
-coefficient --- the standard remedy --- would push where the agent is already saturated, so
-we implemented it but left it disabled.
+A fourth explanation is the one that survived, and it concerns how much reward a task
+exposes before it has been learned. Rolling out a random policy on each task and recording
+the largest per-step reward it encounters within an episode, averaged over episodes and
+seeds, gives Table~\ref{tab:reward}. The spread across the suite is a factor of 85.
 
-\emph{Insufficient retention.} The shared buffer holds 3.3M transitions across ten tasks,
-i.e.\ 330k per task under a uniform split, matching the retention that solved
-\emph{pick-place} on MT3. Retention was already correct.
-
-\emph{The episode cap.} Using Meta-World's scripted expert policies we measured
-steps-to-success at a 500-step horizon: \emph{peg-insert-side} is solved in a median of 93
-steps, and 17 of 20 attempts finish within our 200-step cap. The cap implies a ceiling near
-85\% on that task, but cannot explain a floor of zero.
-
-\subsection{What the measurement showed}
-
-The decisive quantity turned out to be how much reward is reachable \emph{before} a task is
-learned. We rolled out a random policy on each task and recorded the peak per-step reward it
-encountered:
-
+\begin{table}[tb]
+\caption{Reward reachable before learning: the largest per-step reward a uniform-random
+policy encounters within an episode, averaged over 50 episodes and 3 seeds. The ordering
+matches the order in which the tasks are learned; the two below the rule are the slow ones.}
+\label{tab:reward}
+\vspace{-0.2cm}
 \begin{center}
 \small
-\begin{tabular}{lcccc}
+\begin{tabular}{lc}
 \toprule
- & reach & push & pick-place & peg-insert-side \\
+task & reachable reward \\
 \midrule
-peak reward & 3.59 & 0.54 & 0.08 & 0.03 \\
+reach                & 2.56 \\
+drawer-close         & 2.43 \\
+drawer-open          & 1.90 \\
+door-open            & 0.93 \\
+window-close         & 0.74 \\
+button-press-topdown & 0.59 \\
+window-open          & 0.49 \\
+push                 & 0.14 \\
+\midrule
+pick-place           & 0.04 \\
+peg-insert-side      & 0.03 \\
 \bottomrule
 \end{tabular}
+\vspace{-0.7cm}
 \end{center}
+\end{table}
 
-This is a 120-fold spread, and it reproduces the order in which the ten tasks were learned.
-Its consequence for a shared critic is arithmetic. Once the easy tasks are solved their
-evaluation returns range from $1{,}081$ to $1{,}867$, while an unlearned
-\emph{peg-insert-side} episode returns under $70$. The critic is fitted by minimising
-squared error over a batch containing all tasks, so residuals enter the gradient in
-proportion to the square of their magnitude: a two-order-of-magnitude gap in return scale is
-a four-order-of-magnitude gap in gradient contribution. The signal belonging to
-\emph{peg-insert-side} is not merely smaller than the others, it is negligible against them.
-The critic reduces its loss most efficiently by ignoring the task, and the actor, which
-follows $Q$, ignores it in turn.
+The ordering reproduces the order in which the ten tasks are learned. The two tasks at
+the bottom are exactly the two that are slow or never learned, and push, the least stable of
+the eight solved tasks, is next-lowest. Its consequence for a
+shared critic is arithmetic. Once the easy tasks are solved their evaluation returns are
+more than fifteen times larger than an unlearned peg-insert-side episode's (Appendix~C), and
+the critic is fitted by minimising squared error over a batch containing all tasks, so
+residuals enter the gradient in proportion to the square of their magnitude, a gap of more
+than two orders of magnitude. The signal belonging to the
+failing task is not merely smaller than the others, it is negligible against them, and the
+critic reduces its loss most efficiently by ignoring the task.
 
-This also explains why the curriculum was not enough. A curriculum controls \emph{how often}
-a task is sampled; it cannot make what that task shows the critic register. The two are
-orthogonal, and for \emph{peg-insert-side} the second is the binding constraint.
+Two levers follow, and they are not equivalent. One is the weight each residual carries in
+the loss; the other is how many samples in the batch belong to the task at all, which under
+a uniform split over ten tasks is a tenth of them. We act on the second, because no
+reweighting of a loss creates data that is not in the batch. That is the curriculum of
+Sec.~\ref{sec:curriculum}, and Sec.~\ref{sec:curriculum} explains there why the weights
+are applied to replay rather than to collection: on this suite the failing tasks were already
+being visited far more than enough.
 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-\section{METHOD}
-\label{sec:method}
-
-\subsection{Per-task critic-loss normalisation}
-
-We maintain, for each task $i$, an exponential moving estimate $\sigma_i$ of the standard
-deviation of that task's TD targets, updated from each batch with momentum
-$\alpha = 10^{-3}$:
-%
-$$
-\sigma_i \leftarrow (1-\alpha)\,\sigma_i + \alpha \cdot \mathrm{std}\!\left(\{y_k : \tau_k = i\}\right)
-\eqno{(1)}
-$$
-%
-where $y_k$ is the target for sample $k$ and $\tau_k$ its task, recovered from the one-hot
-block of the observation. The critic loss divides each sample's residual by its own task's
-scale:
-%
-$$
-\mathcal{L} = \tfrac{1}{2}\sum_{j}\; \mathbb{E}_k
-\left[ \left( \frac{Q_j(s_k,a_k) - y_k}{\max(\sigma_{\tau_k},\,\sigma_{\min})} \right)^{\!2} \right]
-\eqno{(2)}
-$$
-%
-with $\sigma_{\min} = 10^{-2}$ guarding against a task whose targets are momentarily
-constant. Every task now contributes comparably to the loss regardless of its reward
-magnitude.
-
-Two properties matter. We scale the \emph{loss}, not the targets, so $Q$ stays in real
-units and the actor objective, the target computation and every logged value are unchanged.
-And $\sigma_i$ is estimated from the run's own TD targets: it is not a constant, not a
-per-task setting, and not carried over from a previous run.
-
-\subsection{Failure-rate replay curriculum}
-\label{sec:curriculum}
-
-Let $\bar{s}_i$ be task $i$'s mean success over the last $M = 3$ evaluations. We weight
-replay sampling by
-%
-$$
-w_i \;\propto\; \mathrm{clip}\left(1 - \bar{s}_i,\; \ell,\; c\right),
-\qquad \ell = 0.1,\; c = 0.6
-\eqno{(3)}
-$$
-%
-normalised over tasks and applied as a per-environment sampling probability inside the
-replay buffer. Task-to-environment assignment is fixed at construction, so this costs one
-weighted draw per batch and no per-transition bookkeeping.
-
-Three choices distinguish this from the usual formulation. It acts on \textbf{replay rather
-than collection}, because collection share and optimisation share are separable and only the
-latter binds: under a uniform split MT10 already collects far more \emph{pick-place}
-transitions than the amount that solved it standalone. The \textbf{floor} $\ell$ prevents a
-solved task's share from reaching zero, which is forgetting. The \textbf{cap} $c$ prevents a
-task that cannot yet be learned from absorbing the entire budget, which is what a bare
-$f_i / \sum_j f_j$ rule does at ten tasks when two are stuck at zero. With eight tasks
-solved and two at zero, (3) gives each failing task 115 of every 384 samples and each solved
-task 19.
-
-\subsection{No per-task constants}
-
-No configuration file in this project names a task. The curriculum reads evaluation success,
-which the run measures; the normalisation reads TD-target dispersion, which the run
-computes. The only hand-chosen constants --- $\ell$, $c$, $\alpha$, $\sigma_{\min}$ and the
-number of environments --- are global and shared by every task. Four further settings
-(buffer size, batch size, gradient steps, total steps) follow from the number of tasks by
-arithmetic. Applying the same configuration to a larger suite such as MT30 would therefore
-need no further search, though we had neither the compute nor the time to verify that.
-
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-\section{RESULTS}
+\subsection{MT10: curriculum against baseline}
 \label{sec:results}
 
-\subsection{MT10 ablation}
+The baseline here is the identical configuration with the curriculum disabled, so that
+replay is drawn uniformly across the ten tasks. Both runs go to 9M environment steps and
+neither uses early stopping, so a task at zero is seen to stay at zero for the whole budget
+rather than being cut short. Fig.~\ref{fig:mean} gives mean success and
+Fig.~\ref{fig:hard} the two slow tasks; the eight remaining tasks are solved by both runs, and
+Appendix~B gives the full per-task breakdown.
 
-We ran the four combinations of the two mechanisms to 9M steps on the identical configuration
-of Sec.~\ref{sec:method}; the arms differ only in which flags are set, and no arm uses early
-stopping, so a flat arm is seen to stay flat for the whole budget rather than being cut
-short. 9M is the budget the combined arm used, and the other three are held to it because
-the effect under test appears late: the combined arm's \emph{peg-insert-side} was still at
-exactly $0.00$ at 2.7M, so an arm stopped at 6M could not be said to have failed.
-Fig.~\ref{fig:mean} gives mean success and Fig.~\ref{fig:hard} the two tasks the baseline
-never learns; Table~\ref{tab:mt10} lists the final numbers and Table~\ref{tab:pertask} the
-per-task breakdown.
-
-\begin{figure}[t]
+\begin{figure}[tb]
   \centering
-  \includegraphics[width=\columnwidth]{fig/mt10_mean.pdf}
-  \caption{MT10 mean success over all ten tasks, for the four combinations of replay
-  curriculum and normalised critic loss, each trained to the common 9M-step budget.}
+  \includegraphics[width=0.9\columnwidth]{fig/mt10_mean.pdf}
+  \vspace{-0.3cm}
+  \caption{MT10 mean success over all ten tasks, with and without the replay curriculum,
+  both trained to the same 9M-step budget.}
   \label{fig:mean}
+  \vspace{-0.5cm}
 \end{figure}
 
-\begin{figure}[t]
+\begin{figure}[b]
+  \vspace{-0.3cm}
   \centering
   \includegraphics[width=\columnwidth]{fig/mt10_hard.pdf}
-  \caption{The two tasks the baseline never learns, per arm. \pending{one sentence on which
-  arms leave them at zero, once the curriculum-only arm has run}}
+  \vspace{-0.8cm}
+  \caption{The two slow tasks. The curriculum reaches pick-place roughly $2.6\times$
+  earlier in environment steps, and is the difference between peg-insert-side
+  being solved and never leaving zero across the entire 9M steps.}
   \label{fig:hard}
 \end{figure}
 
-\begin{table}[h]
-\caption{MT10 ablation at the common 9M-step budget, final evaluation. ``Solved'' counts
-tasks at or above $0.9$ out of ten. \pending{fill the three ``?'' rows from
-\texttt{python report/make\_figures.py}; the numbers printed under ``at each arm's
-endpoint'' are the ones to quote}}
-\label{tab:mt10}
-\begin{center}
-\small
-\begin{tabular}{llcccc}
-\toprule
-curriculum & normalisation & pick-pl. & peg-ins. & solved & mean \\
-\midrule
---         & --         & ?    & ?    & ? & ?     \\
-\checkmark & --         & ?    & ?    & ? & ?     \\
---         & \checkmark & ?    & ?    & ? & ?     \\
-\checkmark & \checkmark & \textbf{0.83} & \textbf{0.97} & 9 & \textbf{0.977} \\
-\bottomrule
-\end{tabular}
-\end{center}
-\end{table}
+\textbf{Baseline.} Eight tasks pass $0.9$ success by 1.5M steps and mean success then holds at
+$0.79$ for the next one million steps. That plateau is what prompted the diagnosis above, and
+it does not last: pick-place records its first non-zero evaluation at 2.5M steps,
+passes half success at 5.0M steps, and ends at $0.83$ success. Peg-insert-side does not move at
+all, reading exactly $0.00$ success at every one of its 91 evaluations, with its return at the
+reward floor throughout. Mean success over the suite ends at $0.877$. The two failing
+tasks are therefore not alike: one is slow and one does not learn.
 
-\begin{table}[h]
-\caption{Per-task success at the 9M budget, final evaluation. The effect is confined to the
-two tasks at the bottom; the other eight are solved by every arm.
-\pending{fill the first three columns}}
-\label{tab:pertask}
-\begin{center}
-\small
-\begin{tabular}{lcccc}
-\toprule
-task & neither & curr. & norm. & both \\
-\midrule
-reach                & ? & ? & ? & 1.00 \\
-push                 & ? & ? & ? & 1.00 \\
-door-open            & ? & ? & ? & 1.00 \\
-drawer-open          & ? & ? & ? & 1.00 \\
-drawer-close         & ? & ? & ? & 1.00 \\
-button-press-topdown & ? & ? & ? & 1.00 \\
-window-open          & ? & ? & ? & 1.00 \\
-window-close         & ? & ? & ? & 0.97 \\
-\midrule
-peg-insert-side      & ? & ? & ? & \textbf{0.97} \\
-pick-place           & ? & ? & ? & \textbf{0.83} \\
-\bottomrule
-\end{tabular}
-\end{center}
-\end{table}
+\textbf{Curriculum.} Peg-insert-side leaves zero success at 2.1M steps and reaches
+$1.00$ success,
+meaning all 30 evaluation episodes succeed, 300k steps later, having sat at exactly zero
+throughout the preceding 2.1M steps. It ends at $0.90$ success, against $0.00$ for the
+baseline. Pick-place leaves zero success at 0.8M steps and
+passes half success at 1.9M steps, against 5.0M steps for the baseline, and ends at $0.80$
+success against the baseline's $0.83$. Mean
+success ends at $0.967$, and is stable there: over the final million steps it stays
+between $0.967$ and $1.000$.
 
-\textbf{Neither mechanism (baseline).} Mean success plateaus at $0.79$ from 1.4M steps
-onwards, with both hard tasks at exactly $0.00$ and their evaluation return at the reward
-floor from the first evaluation. \pending{confirm the plateau holds to 9M and give the final
-mean}
+The two comparisons are not of the same kind. The one that carries the result is
+peg-insert-side: 91 consecutive zeros against a task solved outright. The other is
+pick-place, where both runs arrive but the curriculum arrives $2.6\times$ sooner and
+at the same place. The curriculum enables
+one task and accelerates another; it does nothing for the eight that were never in doubt.
+Its scope is that specific: it is a remedy for starved tasks, not a general improvement
+to MT-SAC.
 
-\textbf{Normalisation only.} Correcting the critic loss for return scale, without the
-curriculum, does not move either hard task: both read exactly $0.00$ at every evaluation
-through the first 6M steps, and mean success ends at $0.790$ --- within noise of the
-baseline's $0.793$. \pending{confirm to 9M} This is the result we did not expect, since the
-measurement in Sec.~\ref{sec:mt10stall} identifies return scale as the binding constraint
-and this arm was pre-registered as the test of that diagnosis. Sec.~\ref{sec:whatitmeans}
-takes up what it implies.
+\textbf{The mechanism is visible directly.} Fig.~\ref{fig:share} plots the share of each
+batch the curriculum assigns to each task. Both slow tasks rise from the uniform tenth to
+roughly $30\%$ within the first million steps and hold it while they are failing. The moment a
+task is solved its share collapses back to the floor, which is what eq. (1) prescribes and what
+makes the rule self-limiting: peg-insert-side's share falls at 2.5M steps, immediately after
+it reaches $1.00$ success at 2.4M. Pick-place oscillates afterwards because its success oscillates,
+and the weights track it within three evaluations. This is also what the diagnosis of
+Sec.~\ref{sec:mt10stall} could not supply. Reachable reward orders the tasks correctly, but it
+leaves pick-place and peg-insert-side a factor under three apart while one is learned and the
+other is not; what separated them was the number of transitions each contributed to a batch,
+and once peg-insert-side's tripled it became learnable within 300k steps.
 
-\textbf{Curriculum only.} \pending{whole paragraph: does the curriculum alone lift either
-task off zero, and if so does it consolidate? compare against the warm-started probe, which
-reached 0.03/0.07/0.17 on pick-place and never held it}
-
-\textbf{Both.} \emph{Peg-insert-side} records its first non-zero evaluation at 2.7M steps,
-passes $0.5$ at 3.3M and reaches $1.00$ --- all 30 evaluation episodes --- at 5.6M.
-\emph{Pick-place} follows the same trajectory roughly 800k steps behind. At 6M the run is
-already at mean $0.973$ with nine tasks at or above $0.9$, and over the last 1M steps mean
-success holds between $0.973$ and $0.993$, with \emph{pick-place} in a $0.83$--$1.00$ band
-and \emph{peg-insert-side} at $0.93$--$1.00$. Four evaluations have all ten tasks at or
-above $0.9$ simultaneously, the best at mean $0.993$ (8.4M steps). Both tasks that the
-baseline left at exactly zero are therefore solved, not merely lifted off the floor.
-
-Two observations qualify this. First, the combination gives no early advantage: at 2.2M it
-is marginally \emph{behind} the baseline ($0.777$ against $0.793$). It does not accelerate
-tasks that are already learnable; it makes tasks learnable that otherwise never become so,
-and that only shows after 2.5M steps. Second, there is a cost. \emph{Push} --- solved and
-stable at $1.00$ in the baseline --- becomes noisy under the curriculum, oscillating between
-$0.80$ and $1.00$, because the floor $\ell = 0.1$ deliberately reduces a solved task's replay
-share to 19 samples per batch. The mean is far higher regardless, but this identifies $\ell$
-as the parameter to raise if a solved task were to degrade further.
-
-\subsection{What the ablation decides}
-\label{sec:whatitmeans}
-
-The two arms that isolate a single mechanism are what the diagnosis of
-Sec.~\ref{sec:mt10stall} stands or falls on, and we fix their reading here rather than after
-seeing them. Normalisation alone has already failed to move either task, so the scale
-argument is not sufficient on its own; what remains open is whether the normalisation is
-necessary at all. The curriculum-only arm decides that, and there are only two outcomes:
-
-\begin{itemize}
-\item \textbf{It also leaves both tasks at zero.} Then neither mechanism works alone and the
-      effect is an interaction: the curriculum decides how often a task is sampled, the
-      normalisation decides whether what it shows the critic registers, and each is useless
-      without the other. The diagnosis survives, but as one half of a joint condition rather
-      than as the single cause we proposed.
-\item \textbf{It lifts one or both tasks.} Then the curriculum is doing the work, the
-      normalisation is at best an accelerant, and the reward-scale account is wrong as an
-      explanation of the stall --- an outcome we would report as such. The measurement in
-      Sec.~\ref{sec:mt10stall} would still stand as a description of the imbalance; it would
-      simply not be what the fix acts on.
-\end{itemize}
-
-\pending{delete the branch that did not happen and state the conclusion in one paragraph}
-
-\subsection{The mechanism is visible in the statistics}
-
-Fig.~\ref{fig:scale} plots the learned per-task value scales $\sigma_i$. They span $15$ to
-$89$ at convergence, and far more early in training: \emph{peg-insert-side} begins near
-$0.04$ and rises to $6.7$ as the task starts to be learned, then into the range of the
-others. This is a direct measurement of the imbalance the method corrects. Without (2), a
-residual on the $\sigma \approx 0.04$ task is weighted identically to one on the
-$\sigma \approx 89$ task and contributes some $5\times10^{6}$ times less to the gradient.
-
-\begin{figure}[t]
+\begin{figure}[tb]
   \centering
-  \includegraphics[width=\columnwidth]{fig/value_scale.pdf}
-  \caption{Per-task value scale $\sigma_i$ during the combined run (log axis). The two tasks
-  the baseline never learns start orders of magnitude below the rest and rise as they become
-  learnable.}
-  \label{fig:scale}
+  \includegraphics[width=\columnwidth]{fig/curriculum_share.pdf}
+  \vspace{-0.7cm}
+  \caption{The fraction of each training batch the curriculum assigns to each task, over
+  the MT10 curriculum run. Grey lines are the eight tasks solved early. A failing task rises to
+  roughly three times the uniform share and falls back to the floor as soon as it is
+  solved.}
+  \label{fig:share}
+  \vspace{-0.5cm}
 \end{figure}
 
-\subsection{Multi-task against single-task}
+\textbf{What it costs.} Diverting replay towards failing tasks slows the ones already
+working: the baseline has eight tasks above $0.9$ success at 1.5M steps, the curriculum not
+until 2.0M. The cost does not persist. At the endpoint the curriculum is at or above the
+baseline on all eight, and push, the least stable of them in both runs, is slightly steadier
+under the curriculum.
 
-Comparing the completed MT10 run against the single-task runs of Table~\ref{tab:single}, all
-at their final evaluation: \emph{reach} $1.00$ against $1.00$, \emph{push} $1.00$ against
-$0.93$, \emph{pick-place} $0.83$ against $0.80$. The multi-task agent matches or exceeds
-single-task SAC on every task we trained separately, despite dividing its capacity ten ways
-and collecting 900k environment steps per task --- under half the single-task runs' 2M ---
-since the 9M budget is a total across the suite. It also solves
-\emph{peg-insert-side}, which we never trained standalone. Sharing one critic across ten
-tasks cost us nothing measurable here once the scale imbalance was corrected; we make no
+\textbf{Against single-task SAC.} At each run's final evaluation, the curriculum run
+reaches $1.00$ success on reach against $1.00$ in Table~\ref{tab:single}, $0.97$ on push
+against $0.93$, and $0.80$ on pick-place against $0.80$, and it also solves peg-insert-side,
+which we never trained standalone. It therefore matches or exceeds single-task SAC on every
+task we trained separately, despite dividing its capacity ten ways and collecting under half as
+many environment steps per task, since the 9M budget is a total across the suite. We make no
 claim of positive transfer, only that the usual multi-task penalty did not appear.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-\section{DISCUSSION AND LIMITATIONS}
+\section{LIMITATIONS}
 
-\textbf{Single seed.} Every number here comes from one seed per configuration. One T1000 and
-47 hours per MT10 arm did not allow seed replication alongside the ablation. The central
-claim is robust to this in one respect --- a task moving from exactly $0.00$ across 23
-consecutive evaluations to $1.00$ on 30 episodes is not seed noise --- but the mean-success
-differences between arms should be read as indicative rather than significant.
+\textbf{Single seed.} Every number comes from one seed per configuration; at 47 hours per
+MT10 run, seed replication was not affordable alongside the comparison. A task at exactly
+$0.00$ success across 91 consecutive evaluations against $1.00$ success on 30 episodes is not
+seed noise, but the mean-success difference should be read as indicative rather than
+significant, and the pick-place endpoints are well inside seed noise.
 
-\textbf{An earlier, weaker version of the ablation.} Before running the arms from scratch we
-tested the curriculum by warm-starting it from the baseline's 2.2M checkpoint. It moved
-\emph{pick-place} off zero for the first time ($0.03$, $0.07$, $0.17$ over successive
-evaluations) but never consolidated it, and did nothing for \emph{peg-insert-side}. That
-probe is what prompted the diagnosis in Sec.~\ref{sec:mt10stall}, but it shares optimiser
-state and replay contents with the baseline, opens with eight tasks already at $1.00$, and
-covers only 2.2M--3.4M steps, so we do not report it as an arm. The curriculum-only row of
-Table~\ref{tab:mt10} is a separate run from scratch.
+\textbf{The mechanism is not isolated.} We did not vary the batch share independently of
+the curriculum, so our reading that the share is what made peg-insert-side learnable is the
+most plausible account of our data rather than a controlled finding.
 
-\textbf{The baseline was stopped and restarted.} The uniform baseline was first halted by
-hand at 2.3M steps, after 23 consecutive evaluations with both hard tasks at exactly $0.00$
-and mean success flat, and was resumed from its checkpoint to the full 9M budget once we
-decided every arm had to be measured at the same horizon. It is therefore one run with an
-interruption, not two.
+\textbf{The episode cap.} Meta-World's scripted expert policies, which serve as a
+reference for how many steps a task needs, exceed 200 steps on a minority of peg-insert-side
+attempts, implying a ceiling near $85\%$ at our cap. The learned policy nonetheless reaches
+$1.00$ success, so it completes the task in fewer steps than the scripted controller and the
+cap is not binding here.
 
-\textbf{The episode cap bounds \emph{peg-insert-side}.} Our scripted-expert measurement
-implies a ceiling near 85\% at 200 steps, yet the learned policy reaches $1.00$. The learned
-solution is therefore faster than Meta-World's reference controller on this task, which we
-did not anticipate and did not optimise for.
-
-\textbf{Not tested.} A per-task entropy coefficient is implemented and left disabled, on the
-measurement that the failing tasks were already the noisiest in the run; testing it as a
-fifth arm would strengthen the comparison against the usual remedy. We also did not attempt
-MT30 or MT50, so the claim that the configuration transfers by arithmetic is untested.
-
+\textbf{Not tested.} A per-task entropy coefficient is implemented and left disabled, on
+the measurement that the failing tasks were already the noisiest in the run; testing it would
+strengthen the comparison against the usual remedy. We also did not attempt MT30 or MT50, so
+the claim that the configuration transfers by arithmetic is untested.
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 \section{CONCLUSIONS}
 
-We scaled SAC from single Meta-World tasks to MT10 and spent most of the project on the two
-tasks that would not learn. The useful lesson for us was that the obvious explanation --- too
-little data --- was testable and false, and that a cheap CPU measurement (the reward a random
-policy can reach on each task) identified the real constraint after two full training runs
-had failed to fix it. Correcting the critic loss for per-task return scale, together with a
-replay curriculum, took MT10 mean success from $0.79$ to $0.977$ at a matched 9M budget,
-with all ten tasks at or above $0.9$ at the best evaluation --- including
-\emph{peg-insert-side}, which had never once succeeded beforehand. \pending{one sentence on
-what the single-mechanism arms showed, from Sec.~\ref{sec:whatitmeans}}
+We scaled SAC from single Meta-World tasks to MT10, and each stage produced an insight
+the previous one could not. On single tasks the constraint was critic stability, resolved by
+decorrelating the replay buffer and bounding the value scale. On MT3 an apparent allocation
+problem turned out to be a capacity problem, and enlarging the shared learner solved all three
+tasks without directing resources at any of them; learning the three together also cost less
+total experience than learning them apart. On MT10 a third constraint appeared that neither
+earlier account covers, in which a task exposing very little reward before it is learned
+receives too small a share of each batch for the shared critic to fit it. A replay curriculum
+weighted by measured failure rate addresses exactly that, solving the task that otherwise never
+succeeds, reaching the slow task $2.6\times$ earlier, and improving mean success from $0.877$
+to $0.967$ at the final evaluation.
 
-Neither mechanism is new in itself: the normalisation is an adaptation of PopArt and the
-curriculum is a standard failure-rate rule with a floor and a cap. What we would keep from
-this project is the working habit --- when a run stalls, measure the quantity the algorithm
-actually depends on before changing hyperparameters --- and the discipline of not letting
-any setting name an individual task, which is what makes the result an argument rather than
-a tuning record.
+The general lesson is about where to look when a shared learner stalls. The interaction
+that a shared critic and a shared buffer create between tasks is invisible in an average over
+tasks, and diagnosing it required measuring a per-task quantity the algorithm depends on but
+does not report. We would repeat that order of operations: measure what the algorithm consumes
+per task before changing what it does, and keep every setting free of any reference to a
+particular task.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section*{APPENDIX}
+
+\subsection*{A. Hyperparameters}
+
+Actor and critic are both $[512, 1024, 1024, 512]$, with LayerNorm after each hidden critic
+layer from MT3 onwards. Learning rate $3\times10^{-4}$, $\tau = 10^{-3}$, $\gamma = 0.95$,
+automatic entropy tuning, $\log\sigma_{\text{init}} = -3$. The curriculum uses $\ell = 0.1$,
+$c = 0.6$ and $M = 3$ evaluations. Table~\ref{tab:hparams} gives the settings that scale
+with task count; the update-to-data ratio, meaning gradient steps per collected transition, is
+held at $0.67$ throughout.
+
+\begin{table}[tb]
+\caption{Settings that follow from task count. MT3 rows correspond to the three runs of
+Sec.~\ref{sec:mt3}; the MT10 row scales the MT3 uniform row by the task count.}
+\label{tab:hparams}
+\vspace{-0.5cm}
+\begin{center}
+\small
+\begin{tabular}{lccccc}
+\toprule
+configuration & envs & buffer & batch & $\gamma$ & grad. \\
+\midrule
+MT3 initial         & 5/5/5   & 300k & 128 & 0.99 & 1  \\
+MT3 hand allocation & 2/4/9   & 300k & 256 & 0.95 & 10 \\
+MT3 uniform, scaled & 9/9/9   & 1M   & 384 & 0.95 & 18 \\
+MT10                & 9 each  & 3.3M & 384 & 0.95 & 60 \\
+\bottomrule
+\end{tabular}
+\vspace{-0.7cm}
+\end{center}
+\end{table}
+
+\subsection*{B. Per-task MT10 results}
+
+Table~\ref{tab:pertask} gives every task at the 9M budget, final evaluation.
+
+\begin{table}[b]
+\vspace{-0.2cm}
+\caption{MT10 per-task success at the 9M-step budget, final evaluation. The eight tasks
+above the rule are solved by both runs.}
+\label{tab:pertask}
+\vspace{-0.2cm}
+\begin{center}
+\small
+\begin{tabular}{lcc}
+\toprule
+task & baseline & curriculum \\
+\midrule
+reach                & 1.00 & 1.00 \\
+push                 & 0.93 & 0.97 \\
+door-open            & 1.00 & 1.00 \\
+drawer-open          & 1.00 & 1.00 \\
+drawer-close         & 1.00 & 1.00 \\
+button-press-topdown & 1.00 & 1.00 \\
+window-open          & 1.00 & 1.00 \\
+window-close         & 1.00 & 1.00 \\
+\midrule
+pick-place           & 0.83 & 0.80 \\
+peg-insert-side      & 0.00 & \textbf{0.90} \\
+\midrule
+mean                 & 0.877 & \textbf{0.967} \\
+\bottomrule
+\end{tabular}
+\end{center}
+\end{table}
+
+Success milestones on the two slow tasks, as baseline against curriculum in environment
+steps. Pick-place: leaves zero at 2.5M against 0.8M, passes $0.5$ success at 5.0M against 1.9M,
+passes $0.9$ success at 6.7M against 3.5M. Peg-insert-side: never leaves zero in the baseline;
+under the curriculum leaves it at 2.1M, passes $0.5$ success at 2.3M and reaches $1.00$ success
+at 2.4M. Over the final million steps the curriculum holds mean success in $0.967$--$1.000$ and
+peg-insert-side in $0.90$--$1.00$; the baseline holds mean success in $0.870$--$0.900$ and
+pick-place in $0.80$--$1.00$.
+
+\subsection*{C. Diagnostic probe measurements}
+
+All three probes ran on CPU against a saved baseline policy, without further training.
+
+\textbf{Exploration.} Per-task action standard deviation: peg-insert-side is the
+noisiest task in the run at $0.877$ and pick-place second at $0.531$, against $0.272$
+for the fully solved reach.
+
+\textbf{Retention and episode cap.} The shared buffer holds 330k transitions per task
+under a uniform split, matching the retention that solved pick-place on MT3. At a 500-step
+horizon, Meta-World's scripted expert solves peg-insert-side in a median of 93 steps, with 17
+of 20 attempts inside our 200-step cap.
+
+\textbf{Return scale.} Once the easy tasks are solved their evaluation returns range from
+$1{,}081$ to $1{,}867$, while an unlearned peg-insert-side episode returns under $70$.
+
+\textbf{Reachable reward.} Table~\ref{tab:reward} averages, per task, the largest per-step
+reward a uniform-random policy encounters within an episode, over 50 episodes and seeds
+$0,1,2$. We average per-episode maxima rather than taking one maximum over all episodes,
+which is a max statistic: it grows with the episode count and varied by more than a factor of
+two between seeds, while the reported quantity is stable to the second decimal.
 
 \addtolength{\textheight}{-3cm}
 
@@ -603,14 +698,6 @@ learning,'' in \emph{Conf. on Robot Learning (CoRL)}, 2019.
 actor-critic: Off-policy maximum entropy deep reinforcement learning with a stochastic
 actor,'' in \emph{Int. Conf. on Machine Learning (ICML)}, 2018.
 
-\bibitem{vanhasselt2016popart} H. van Hasselt, A. Guez, M. Hessel, V. Mnih, and D. Silver,
-``Learning values across many orders of magnitude,'' in \emph{Advances in Neural Information
-Processing Systems (NeurIPS)}, 2016.
-
-\bibitem{hessel2019popart} M. Hessel, H. Soyer, L. Espeholt, W. Czarnecki, S. Schmitt, and
-H. van Hasselt, ``Multi-task deep reinforcement learning with PopArt,'' in \emph{AAAI Conf.
-on Artificial Intelligence}, 2019.
-
 \bibitem{yang2020softmod} R. Yang, H. Xu, Y. Wu, and X. Wang, ``Multi-task reinforcement
 learning with soft modularization,'' in \emph{Advances in Neural Information Processing
 Systems (NeurIPS)}, 2020.
@@ -618,6 +705,16 @@ Systems (NeurIPS)}, 2020.
 \bibitem{sodhani2021care} S. Sodhani, A. Zhang, and J. Pineau, ``Multi-task reinforcement
 learning with context-based representations,'' in \emph{Int. Conf. on Machine Learning
 (ICML)}, 2021.
+
+\bibitem{matiisen2020tscl} T. Matiisen, A. Oliver, T. Cohen, and J. Schulman,
+``Teacher-student curriculum learning,'' \emph{IEEE Trans. on Neural Networks and Learning
+Systems}, vol. 31, no. 9, pp. 3732--3740, 2020.
+
+\bibitem{schaul2016per} T. Schaul, J. Quan, I. Antonoglou, and D. Silver, ``Prioritized
+experience replay,'' in \emph{Int. Conf. on Learning Representations (ICLR)}, 2016.
+
+\bibitem{jiang2021plr} M. Jiang, E. Grefenstette, and T. Rockt\"{a}schel, ``Prioritized level
+replay,'' in \emph{Int. Conf. on Machine Learning (ICML)}, 2021.
 
 \bibitem{raffin2021sb3} A. Raffin, A. Hill, A. Gleave, A. Kanervisto, M. Ernestus, and
 N. Dormann, ``Stable-Baselines3: Reliable reinforcement learning implementations,''
